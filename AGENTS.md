@@ -31,7 +31,7 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 
 ## Development environment
 
-- `compose.yaml` defines one `app` service (Node 24, pnpm via corepack, the repo mounted at `/workspace`, no ports). Install, build, lint and tests run there, never on the host.
+- `.devcontainer/` defines a compose-based dev container (service `app`: Node 24, pnpm via corepack, the repo at `/workspaces/yt-ai-subs`, no ports; `pnpm install` on create). Install, build, lint and tests run there, never on the host.
 - The build writes the unpacked extension to `dist/`; browser tests load it from the host path of the worktree.
 
 ## Secrets

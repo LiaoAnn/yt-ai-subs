@@ -1,0 +1,6 @@
+services:
+  app:
+    build: { context: ., dockerfile: Dockerfile }
+    command: sleep infinity
+    user: node
+    volumes: ["..:/workspaces/yt-ai-subs"]

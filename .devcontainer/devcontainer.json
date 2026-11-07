@@ -1,0 +1,10 @@
+// Builds and tests the extension. No ports: the build writes to ./dist, and a
+// browser on the host loads it as an unpacked extension.
+{
+  "name": "yt-ai-subs",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/yt-ai-subs",
+  "remoteUser": "node",
+  "postCreateCommand": "if [ -f package.json ]; then pnpm install; fi"
+}
