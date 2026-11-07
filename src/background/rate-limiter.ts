@@ -39,9 +39,11 @@ export interface Entry {
   cost: Cost;
 }
 
-interface ServerBudget {
+export interface ServerBudget {
   remaining: number;
   resetAt: number;
+  /** x-ratelimit-limit-*, when Groq sent it. */
+  limit?: number;
 }
 
 export interface LimiterState {
@@ -158,7 +160,12 @@ export class RateLimiter {
       const remaining = Number(remainingText);
       const reset = parseResetDuration(headers.get(`x-ratelimit-reset-${suffix}`));
       if (!Number.isFinite(remaining) || reset === null) continue;
-      this.state.server[kind][dimension] = { remaining, resetAt: now + reset };
+      const limit = Number(headers.get(`x-ratelimit-limit-${suffix}`) ?? Number.NaN);
+      this.state.server[kind][dimension] = {
+        remaining,
+        resetAt: now + reset,
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+      };
     }
   }
 

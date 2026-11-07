@@ -6,11 +6,13 @@ import { LOG_PREFIX } from "@/shared/log";
 import {
   isPageMessage,
   type DisplayModeReply,
+  type QuotaReply,
   type RuntimeMessage,
   type SegmentMessage,
   type TranscribeReply,
   type TranslateReply,
 } from "@/shared/messages";
+import { TRANSLATION_PAUSED_MESSAGE, translationPaused, type QuotaLevels } from "@/shared/quota";
 import {
   DEFAULT_SETTINGS,
   SETTINGS_STORAGE_KEY,
@@ -39,6 +41,10 @@ import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
 
 const MAX_PARALLEL_JOBS = 2;
+/** How often the day's Groq budget is asked for (it also comes with every reply). */
+const QUOTA_REFRESH_MS = 30_000;
+/** With little of the day's Whisper budget left: one chunk at a time, less far ahead. */
+const LOW_QUOTA_SCHEDULE = { ...DEFAULT_SCHEDULE, lookaheadSeconds: 30 };
 const RETRY_BASE_MS = 8000;
 /** How long a range with no buffered audio is skipped before it is checked again. */
 const SKIP_RECHECK_MS = 5000;
@@ -106,6 +112,22 @@ let settings: Settings = DEFAULT_SETTINGS;
 let settingsLoaded = false;
 let state: VideoState | null = null;
 let nextJobId = 1;
+let quota: QuotaLevels = { whisper: "ok", chat: "ok" };
+let quotaAskedAt = 0;
+
+/** Keeps `quota` fresh, so the scheduler notices a budget reset or running low. */
+function refreshQuota() {
+  if (Date.now() - quotaAskedAt < QUOTA_REFRESH_MS) return;
+  quotaAskedAt = Date.now();
+  chrome.runtime.sendMessage({ type: "get-quota" } satisfies RuntimeMessage).then(
+    (reply: QuotaReply | undefined) => {
+      if (reply?.type === "quota") quota = reply.levels;
+    },
+    () => {
+      // The service worker is restarting; ask again next time.
+    },
+  );
+}
 const overlay = new Overlay();
 const captionTrack = new CaptionTrackBridge();
 const diag = { pageReady: false, audioBuffers: 0, segments: 0, reason: "" };
@@ -350,6 +372,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     const asrRequest: RuntimeMessage = {
       type: "transcribe",
       requestId: asrId!,
+      videoId: target.videoId,
       wavBase64: bytesToBase64(audio.wav),
       durationSeconds: audio.duration,
       context: previous.map((cue) => cue.original).join(" "),
@@ -359,6 +382,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     if (signal.aborted || state !== target) return;
     if (!asr) throw new Error("背景程式沒有回應");
     if (!asr.ok) throw new Error(asr.error);
+    quota = asr.quota;
     console.log(
       LOG_PREFIX,
       `whisper ${label} (${audio.duration.toFixed(1)} s audio` +
@@ -398,7 +422,11 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     target.cues = target.cues.toSorted((a, b) => a.start - b.start);
     job.transcribed = true;
 
-    if (settings.translate && fresh.length) {
+    if (settings.translate && fresh.length && translationPaused(quota)) {
+      // Keep the rest of the day's budget for the original captions.
+      job.untranslated = true;
+      target.lastError = TRANSLATION_PAUSED_MESSAGE;
+    } else if (settings.translate && fresh.length) {
       // Translate with the chunk before already translated, so names and terms carry over.
       if (before) {
         contextWaitMs += await waitUntil(
@@ -415,6 +443,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       const trRequest: RuntimeMessage = {
         type: "translate",
         requestId: trId!,
+        videoId: target.videoId,
         lines: fresh.map((cue) => cue.original),
         context: recentLines(target, job.start)
           .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
@@ -425,6 +454,9 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         target.cues = target.cues.filter((cue) => !fresh.includes(cue));
         return;
       }
+      if (tr?.ok) quota = tr.quota;
+      else if (tr?.quotaPaused)
+        quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
       if (tr?.ok) {
         fresh.forEach((cue, i) => {
           cue.translation = tr.lines[i] ?? cue.original;
@@ -493,8 +525,16 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
   const t = v.currentTime;
   const duration = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity;
   cancelIrrelevant(target, t);
-  for (let guard = 0; inFlight(target) < MAX_PARALLEL_JOBS && guard < 4; guard++) {
-    const next = nextNeeded([...target.jobs.values()], t, duration, Date.now(), DEFAULT_SCHEDULE);
+  if (quota.whisper === "out") {
+    diag.reason = "今天的語音辨識額度用完了";
+    target.store.prune(t, (time) => isFinished(target.jobs.values(), time));
+    return;
+  }
+  const low = quota.whisper === "low";
+  const maxJobs = low ? 1 : MAX_PARALLEL_JOBS;
+  const options = low ? LOW_QUOTA_SCHEDULE : DEFAULT_SCHEDULE;
+  for (let guard = 0; inFlight(target) < maxJobs && guard < 4; guard++) {
+    const next = nextNeeded([...target.jobs.values()], t, duration, Date.now(), options);
     if (!next) {
       diag.reason = inFlight(target) ? "處理中" : "前面都處理好了";
       break;
@@ -564,6 +604,7 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
   if (!settings.enabled || isAdShowing() || !settingsLoaded) message = "";
   else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
   else if (target?.lastError) message = `AI 字幕：${target.lastError}`;
+  else if (quota.whisper === "out") message = "AI 字幕：今天的語音辨識額度用完了";
   else if (!diag.pageReady && playedLong) message = "AI 字幕：沒掛上播放器，請重新整理頁面";
   else if (!target && playedLong) {
     message = diag.audioBuffers
@@ -607,6 +648,7 @@ function tick() {
     diag.reason = "廣告中";
     return;
   }
+  if (!(settings.debugCapture && settings.debugDryRun)) refreshQuota();
   schedule(target, v);
 }
 
@@ -676,6 +718,7 @@ function debugLog() {
       cues: target?.cues.length ?? 0,
       error: target?.lastError ?? "",
       reason: diag.reason,
+      quota,
     }),
   );
 }

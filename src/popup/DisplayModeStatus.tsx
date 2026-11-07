@@ -4,7 +4,7 @@ import type { DisplayModeReply, GetDisplayModeMessage } from "@/shared/messages"
 const WATCH_URLS = ["https://www.youtube.com/watch*"];
 
 /** The YouTube tab the popup is about: the active tab, else the last used YouTube tab. */
-async function youTubeTab(): Promise<chrome.tabs.Tab | undefined> {
+export async function youTubeTab(): Promise<chrome.tabs.Tab | undefined> {
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (active?.url?.startsWith("https://www.youtube.com/")) return active;
   const tabs = await chrome.tabs.query({ url: WATCH_URLS });

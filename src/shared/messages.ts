@@ -6,6 +6,7 @@
 // popup --chrome.tabs.sendMessage--> content script
 
 import type { Cue, Json3Event } from "./captions";
+import type { QuotaLevels } from "./quota";
 
 /** Tag on every window message, so the content script ignores YouTube's own messages. */
 export const PAGE_MESSAGE_TAG = "__ytAiSubs";
@@ -147,6 +148,8 @@ export interface TranscribeMessage {
   type: "transcribe";
   /** Lets the content script cancel the request with a CancelMessage. */
   requestId: string;
+  /** The video the audio is from, for the per-video usage in the popup. */
+  videoId: string;
   /** 16 kHz mono WAV, base64 (runtime messages are JSON, so no ArrayBuffers). */
   wavBase64: string;
   durationSeconds: number;
@@ -157,6 +160,7 @@ export interface TranscribeMessage {
 export interface TranslateMessage {
   type: "translate";
   requestId: string;
+  videoId: string;
   lines: string[];
   /** Previous lines ("original → translation" when translated), for context only. */
   context: string;
@@ -167,7 +171,22 @@ export interface CancelMessage {
   requestIds: string[];
 }
 
-export type RuntimeMessage = PingMessage | TranscribeMessage | TranslateMessage | CancelMessage;
+/** Asks the background how much of the day's Groq budget is left. */
+export interface GetQuotaMessage {
+  type: "get-quota";
+}
+
+export type RuntimeMessage =
+  | PingMessage
+  | TranscribeMessage
+  | TranslateMessage
+  | CancelMessage
+  | GetQuotaMessage;
+
+export interface QuotaReply {
+  type: "quota";
+  levels: QuotaLevels;
+}
 
 /** From the popup to a tab's content script. */
 export interface GetDisplayModeMessage {
@@ -190,11 +209,15 @@ export interface FailedReply {
   error: string;
   /** The request was cancelled; not an error to show. */
   aborted: boolean;
+  /** Not sent: translation is paused to keep the rest of the day's budget. */
+  quotaPaused?: boolean;
 }
 
 export interface CallTimings {
   latencyMs: number;
   waitedMs: number;
+  /** The day's budget levels after this request. */
+  quota: QuotaLevels;
 }
 
 export type TranscribeReply =

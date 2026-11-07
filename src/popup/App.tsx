@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { DisplayModeStatus } from "./DisplayModeStatus";
+import { QuotaStatus } from "./QuotaStatus";
 import {
   DEFAULT_SETTINGS,
   SOURCE_LANGUAGES,
@@ -68,7 +69,10 @@ export function App() {
           <CardDescription>用語音模型產生 YouTube 字幕，可選擇翻譯。</CardDescription>
           <DisplayModeStatus />
         </CardHeader>
-        <CardContent className="px-4">
+        <CardContent className="grid gap-4 px-4">
+          <div className="border-b pb-4">
+            <QuotaStatus />
+          </div>
           <form onSubmit={onSave}>
             <fieldset className="grid gap-4" disabled={!loaded}>
               <div className="flex items-center justify-between gap-2">

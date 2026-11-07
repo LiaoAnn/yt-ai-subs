@@ -101,6 +101,7 @@ export async function transcribe(
   context: string,
   signal: AbortSignal,
   onLimiterChange: () => void,
+  onBilled: (cost: Cost) => void = () => {},
 ): Promise<TranscribeResult> {
   const cost: Cost = {
     requests: 1,
@@ -134,6 +135,7 @@ export async function transcribe(
     onLimiterChange,
   );
   if (!response.ok) throw await errorFrom(response, "語音辨識失敗");
+  onBilled(cost);
   const json = (await response.json()) as WhisperVerboseJson;
   return { cues: whisperToCues(json, prompt), language: json.language ?? "", stats, raw: json };
 }
@@ -202,6 +204,7 @@ export async function translate(
   context: string,
   signal: AbortSignal,
   onLimiterChange: () => void,
+  onBilled: (cost: Cost) => void = () => {},
 ): Promise<TranslateResult> {
   const system = `You are a professional subtitle translator. Translate subtitle lines into ${targetLanguageName(settings)}.
 The input is a JSON object of numbered lines, consecutive pieces of speech from a video.
@@ -253,6 +256,7 @@ Reply ONLY with a JSON object with exactly the same keys: {"1": "...", "2": "...
   const totalTokens = Number(json.usage?.total_tokens) || estimate;
   limiter.adjust("chat", entryId, { tokens: totalTokens });
   onLimiterChange();
+  onBilled({ requests: 1, tokens: totalTokens });
   console.log(
     LOG_PREFIX,
     `translation: ${lines.length} lines, ${totalTokens} tokens, ${stats.latencyMs} ms`,
