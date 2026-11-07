@@ -45,7 +45,7 @@ function BudgetRow({ budget, now }: { budget: DailyBudget; now: number }) {
   return (
     <li className="grid gap-0.5">
       <div className="flex justify-between gap-2">
-        <span>{DIMENSION_LABELS[budget.dimension]}</span>
+        <span className="shrink-0">{DIMENSION_LABELS[budget.dimension]}</span>
         <span className="tabular-nums">
           剩 {number(budget.remaining)} / {number(budget.limit)}
           {budget.source === "estimate" ? "（估）" : ""}
@@ -147,7 +147,7 @@ export function QuotaStatus() {
           {text}
         </p>
       ))}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid gap-3">
         {quotas.map(({ kind, quota }) => (
           <div key={kind} className="grid gap-1">
             <h3 className="text-xs font-medium text-muted-foreground">{KIND_LABELS[kind]}</h3>
