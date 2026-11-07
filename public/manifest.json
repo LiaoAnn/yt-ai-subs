@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "YT AI Subs",
+  "version": "0.1.0",
+  "description": "Transcribes (and optionally translates) YouTube audio a few chunks ahead of the playhead.",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.youtube.com/*", "https://api.groq.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "YT AI Subs"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["page.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

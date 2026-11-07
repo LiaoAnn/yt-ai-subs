@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }],
+  // Repeated here so the shadcn CLI finds the import alias.
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] }
+  }
+}

@@ -28,11 +28,39 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 - oxlint for linting, oxfmt for formatting. No ESLint or Prettier.
 - pnpm (via corepack) as the package manager.
 - Content script (isolated world), page script (MAIN world) and service worker are separate entry points.
+- Build: plain Vite 8, one build per entry point, driven by `scripts/build.ts` (no `@crxjs/vite-plugin`). The page script must run synchronously at `document_start`, before YouTube's player code, so it is bundled as a single classic script (IIFE) with no loader; CRXJS injects content scripts through an async dynamic-import loader, which would install the `appendBuffer` hook too late. The content script is an IIFE too (content scripts cannot be ES modules); the service worker is an ES module; the popup is a normal Vite HTML build (`vite.config.ts`).
+- `public/manifest.json` is copied to `dist/` as is; edit it there. `vite build` alone builds only the popup: use `pnpm build`.
+
+## Project layout
+
+- `src/page/` MAIN-world page script (hooks the audio, posts it with `window.postMessage`).
+- `src/content/` isolated-world content script (chunking, scheduling, captions).
+- `src/background/` service worker (speech-to-text and translation API calls).
+- `src/popup/` settings popup (React); `src/components/ui/` shadcn/ui components (add more with `pnpm dlx shadcn@<version> add <name>`, then check that imports use `@/lib/utils`).
+- `src/shared/` code shared by the entry points: message types (`messages.ts`), settings and `chrome.storage.local` access (`settings.ts`), the `[yt-ai-subs]` log prefix (`log.ts`).
+
+## Scripts
+
+Run them in the dev container (see the next section).
+
+- `pnpm build` builds the unpacked extension into `dist/` (production, minified).
+- `pnpm dev` rebuilds `dist/` on change (development, inline source maps). Reload the extension in `chrome://extensions` (and the YouTube tab) after a rebuild. Changes to `public/manifest.json` need a restart of `pnpm dev`.
+- `pnpm typecheck` (`tsc -b`), `pnpm lint` (oxlint), `pnpm format` / `pnpm format:check` (oxfmt).
+- `pnpm check` runs typecheck, lint and format:check; it must pass before a commit.
 
 ## Development environment
 
 - `.devcontainer/` defines a compose-based dev container (service `app`: Node 24, pnpm via corepack, the repo at `/workspaces/yt-ai-subs`, no ports; `pnpm install` on create). Install, build, lint and tests run there, never on the host.
-- The build writes the unpacked extension to `dist/`; browser tests load it from the host path of the worktree.
+- The build writes the unpacked extension to `dist/`; browser tests load it from the host path of the worktree. How: the `test-extension-in-browser` skill.
+
+## Development workflow
+
+Every change goes through these four steps, in order:
+
+1. **Plan** with the `plan-it` skill: approach, scope and how it will be verified.
+2. **Implement** with the `implement-plan` skill, until `pnpm check` and `pnpm build` pass.
+3. **Review** the diff with the `review-change` skill (`git diff main...HEAD` plus uncommitted changes). The review is done by Codex `gpt-6.1-sol` at medium reasoning effort, delegated from the working thread in the same worktree; it reports findings only and does not edit files. Fix what it finds; re-run the review only after large changes.
+4. **Verify** in a real browser: install the built extension with agent-browser and check the effect on a YouTube page (the `test-extension-in-browser` skill; keep evidence with the `verification-evidence` skill).
 
 ## Secrets
 
