@@ -1,0 +1,22 @@
+# Dev container for building and testing the extension. No ports: the build
+# writes to ./dist, and a browser on the host loads it as an unpacked extension.
+services:
+  app:
+    build:
+      dockerfile_inline: |
+        FROM node:24-bookworm
+        RUN corepack enable \
+          && mkdir -p /home/node/.local/share/pnpm \
+          && chown -R node:node /home/node/.local
+    user: node
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - pnpm-store:/home/node/.local/share/pnpm
+    environment:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    command: sleep infinity
+    init: true
+
+volumes:
+  pnpm-store:
