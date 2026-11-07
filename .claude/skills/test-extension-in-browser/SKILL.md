@@ -85,7 +85,7 @@ The background's own `console.log` lines go to the service worker, not the page 
 - `first caption <ms> ms after play/seek`, `cancel <range> (playhead <t>)`, `cache hit: …`
 - every 10 s, `state {…}`: buffered audio ranges, jobs in flight, cue count, last error, and why nothing was sent (`reason`).
 
-From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chrome.storage.local` (`cache:*`, `cacheIndex`) and `chrome.storage.session` (`rateLimiter`: the limiter's log and the budgets Groq reported in its `x-ratelimit-*` headers).
+From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chrome.storage.local` (`cache:*` with their `cachemeta:*` keys, `groqUsage`: billed usage per hour and per video) and `chrome.storage.session` (`rateLimiter`: the limiter's log and the budgets Groq reported in its `x-ratelimit-*` headers).
 
 ## 5. With a real Groq key (only with the user's OK for that run)
 

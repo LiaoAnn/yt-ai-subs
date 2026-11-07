@@ -1,6 +1,11 @@
 // Finished captions per video, in chrome.storage.local, so re-watching costs nothing.
-// An index keeps every entry's last write time; old entries and the oldest beyond a
-// fixed count are removed whenever something is saved.
+//
+// Several tabs save at the same time, so nothing here is a shared read-modify-write value:
+// each entry has a small meta key of its own (`cachemeta:…` -> savedAt), written and removed
+// together with the entry in one storage call. Eviction lists the meta keys and removes
+// expired entries and the oldest beyond a fixed count. An entry without a meta key (saved
+// by an older version, which kept one shared `cacheIndex`) gets one rebuilt from its own
+// savedAt, so no entry is ever left behind.
 
 import type { Cue } from "@/shared/captions";
 import type { Settings } from "@/shared/settings";
@@ -20,9 +25,24 @@ export interface CacheEntry {
 export type CacheIndex = Record<string, number>;
 
 export const CACHE_PREFIX = "cache:";
-const INDEX_KEY = "cacheIndex";
+export const CACHE_META_PREFIX = "cachemeta:";
+/** The shared index older versions kept; used once to rebuild meta keys, then removed. */
+export const LEGACY_INDEX_KEY = "cacheIndex";
 export const CACHE_MAX_ENTRIES = 50;
 export const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const metaKeyOf = (key: string) => CACHE_META_PREFIX + key.slice(CACHE_PREFIX.length);
+const entryKeyOf = (metaKey: string) => CACHE_PREFIX + metaKey.slice(CACHE_META_PREFIX.length);
+
+/** The parts of chrome.storage.local the cache uses (tests pass a fake). */
+export interface CacheStorage {
+  get(keys: string | string[]): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+  remove(keys: string | string[]): Promise<void>;
+  getKeys(): Promise<string[]>;
+}
+
+const local = (): CacheStorage => chrome.storage.local;
 
 /** One cache entry per video and per setting that changes the captions. */
 export function cacheKey(videoId: string, settings: Settings): string {
@@ -46,31 +66,67 @@ export function selectEvictions(
   maxAgeMs = CACHE_MAX_AGE_MS,
 ): string[] {
   const entries = Object.entries(index).toSorted((a, b) => b[1] - a[1]); // newest first
-  const evict: string[] = [];
+  const doomed: string[] = [];
   let kept = 0;
   for (const [key, savedAt] of entries) {
-    if (now - savedAt > maxAgeMs || kept >= maxEntries) evict.push(key);
+    if (!(now - savedAt <= maxAgeMs) || kept >= maxEntries) doomed.push(key);
     else kept++;
   }
-  return evict;
+  return doomed;
 }
 
-export async function loadCache(key: string): Promise<CacheEntry | null> {
-  const stored = await chrome.storage.local.get(key);
+export async function loadCache(
+  key: string,
+  storage: CacheStorage = local(),
+): Promise<CacheEntry | null> {
+  const stored = await storage.get(key);
   const entry = stored[key] as CacheEntry | undefined;
   if (!entry || !Array.isArray(entry.chunks) || !Array.isArray(entry.cues)) return null;
   // Expired entries are only deleted on the next save; never use them meanwhile.
   return isExpired(entry, Date.now()) ? null : entry;
 }
 
-export async function saveCache(key: string, entry: CacheEntry): Promise<void> {
-  const stored = await chrome.storage.local.get(INDEX_KEY);
-  const index: CacheIndex = {
-    ...(stored[INDEX_KEY] as CacheIndex | undefined),
-    [key]: entry.savedAt,
-  };
-  const evict = selectEvictions(index, entry.savedAt);
-  for (const old of evict) delete index[old];
-  if (evict.length) await chrome.storage.local.remove(evict);
-  await chrome.storage.local.set({ [key]: entry, [INDEX_KEY]: index });
+/** Saves one entry with its meta key in a single write, then evicts. */
+export async function saveCache(
+  key: string,
+  entry: CacheEntry,
+  storage: CacheStorage = local(),
+): Promise<void> {
+  await storage.set({ [key]: entry, [metaKeyOf(key)]: entry.savedAt });
+  await evict(entry.savedAt, storage);
+}
+
+/**
+ * Removes expired entries and the oldest beyond CACHE_MAX_ENTRIES, judged from the meta
+ * keys (rebuilt first for entries that have none). Safe to run in several tabs at once:
+ * it only ever removes whole entries with their meta keys.
+ */
+export async function evict(now: number, storage: CacheStorage = local()): Promise<void> {
+  const keys = await storage.getKeys();
+  const metaKeys = keys.filter((key) => key.startsWith(CACHE_META_PREFIX));
+  const withMeta = new Set(metaKeys.map(entryKeyOf));
+  const missing = keys.filter((key) => key.startsWith(CACHE_PREFIX) && !withMeta.has(key));
+  const index: CacheIndex = {};
+
+  const metas = metaKeys.length ? await storage.get(metaKeys) : {};
+  for (const metaKey of metaKeys) {
+    const savedAt = metas[metaKey];
+    index[entryKeyOf(metaKey)] = typeof savedAt === "number" ? savedAt : Number.NaN;
+  }
+
+  if (missing.length || keys.includes(LEGACY_INDEX_KEY)) {
+    // Entries from before the meta keys (or a write that never finished): rebuild.
+    const stored = await storage.get(missing);
+    const rebuilt: Record<string, number> = {};
+    for (const key of missing) {
+      const savedAt = (stored[key] as Partial<CacheEntry> | undefined)?.savedAt;
+      index[key] = typeof savedAt === "number" ? savedAt : Number.NaN;
+      if (Number.isFinite(index[key])) rebuilt[metaKeyOf(key)] = index[key]!;
+    }
+    if (Object.keys(rebuilt).length) await storage.set(rebuilt);
+    if (keys.includes(LEGACY_INDEX_KEY)) await storage.remove(LEGACY_INDEX_KEY);
+  }
+
+  const evicted = selectEvictions(index, now);
+  if (evicted.length) await storage.remove(evicted.flatMap((key) => [key, metaKeyOf(key)]));
 }

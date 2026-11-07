@@ -78,7 +78,7 @@ Seed cached cues (on `chrome-extension://<id>/popup.html`; the key must match th
   const key = "cache:aqz-KE-bpKQ:whisper-large-v3:ja:openai/gpt-oss-120b:zh-TW";
   await chrome.storage.local.set({
     [key]: { chunks: [{ start: 20, end: 120 }], cues, savedAt: Date.now() },
-    cacheIndex: { [key]: Date.now() },
+    [key.replace(/^cache:/, "cachemeta:")]: Date.now(), // its meta key (rebuilt if missing)
   });
 })();
 ```

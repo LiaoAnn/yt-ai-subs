@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "@/shared/settings";
-import { CACHE_MAX_AGE_MS, cacheKey, isExpired, selectEvictions } from "./cache";
+import {
+  CACHE_MAX_AGE_MS,
+  CACHE_MAX_ENTRIES,
+  CACHE_META_PREFIX,
+  CACHE_PREFIX,
+  LEGACY_INDEX_KEY,
+  cacheKey,
+  evict,
+  isExpired,
+  loadCache,
+  metaKeyOf,
+  saveCache,
+  selectEvictions,
+  type CacheEntry,
+  type CacheStorage,
+} from "./cache";
 import { bytesToBase64, encodeWav } from "./wav";
 
 describe("cacheKey", () => {
@@ -35,6 +50,97 @@ describe("selectEvictions", () => {
     expect(selectEvictions(index, now, 2).toSorted()).toEqual(["cache:a", "cache:old"]);
     expect(selectEvictions(index, now, 10)).toEqual(["cache:old"]);
     expect(selectEvictions({}, now)).toEqual([]);
+    expect(selectEvictions({ "cache:nan": Number.NaN }, now)).toEqual(["cache:nan"]);
+  });
+});
+
+/**
+ * chrome.storage.local stand-in: every call resolves after a few ticks, so concurrent
+ * saves (two tabs) interleave between their reads and writes.
+ */
+function fakeStorage(initial: Record<string, unknown> = {}) {
+  const data = new Map(Object.entries(structuredClone(initial)));
+  let calls = 0;
+  const later = async () => {
+    const ticks = (calls++ * 7) % 4;
+    for (let i = 0; i <= ticks; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const storage: CacheStorage = {
+    async get(keys) {
+      await later();
+      const list = typeof keys === "string" ? [keys] : keys;
+      return Object.fromEntries(list.filter((k) => data.has(k)).map((k) => [k, data.get(k)]));
+    },
+    async set(items) {
+      await later();
+      for (const [k, v] of Object.entries(items)) data.set(k, structuredClone(v));
+    },
+    async remove(keys) {
+      await later();
+      for (const k of typeof keys === "string" ? [keys] : keys) data.delete(k);
+    },
+    async getKeys() {
+      await later();
+      return [...data.keys()];
+    },
+  };
+  return { storage, data };
+}
+
+const entry = (savedAt: number): CacheEntry => ({
+  chunks: [{ start: 0, end: 30 }],
+  cues: [{ start: 1, end: 2, original: "テスト" }],
+  savedAt,
+});
+
+const entryKeys = (data: Map<string, unknown>) =>
+  [...data.keys()].filter((k) => k.startsWith(CACHE_PREFIX)).toSorted();
+const metaKeys = (data: Map<string, unknown>) =>
+  [...data.keys()].filter((k) => k.startsWith(CACHE_META_PREFIX)).toSorted();
+
+describe("saveCache with several tabs", () => {
+  it("loses no entry when two tabs save at the same time", async () => {
+    const { storage, data } = fakeStorage();
+    const now = Date.now();
+    await Promise.all([
+      saveCache("cache:a:x", entry(now), storage),
+      saveCache("cache:b:x", entry(now + 1), storage),
+    ]);
+    expect(entryKeys(data)).toEqual(["cache:a:x", "cache:b:x"]);
+    expect(metaKeys(data)).toEqual([metaKeyOf("cache:a:x"), metaKeyOf("cache:b:x")]);
+    expect(await loadCache("cache:a:x", storage)).toEqual(entry(now));
+  });
+
+  it("keeps exactly the newest entries, each with its meta, under concurrent saves", async () => {
+    const { storage, data } = fakeStorage();
+    const now = Date.now();
+    const count = CACHE_MAX_ENTRIES + 12;
+    await Promise.all(
+      Array.from({ length: count }, (_, i) => saveCache(`cache:v${i}:x`, entry(now + i), storage)),
+    );
+    const kept = entryKeys(data);
+    expect(kept).toHaveLength(CACHE_MAX_ENTRIES);
+    expect(kept).not.toContain("cache:v0:x");
+    expect(kept).toContain(`cache:v${count - 1}:x`);
+    // No orphans either way: every entry has its meta key and every meta key its entry.
+    expect(metaKeys(data)).toEqual(kept.map(metaKeyOf).toSorted());
+  });
+
+  it("rebuilds meta keys for entries saved by older versions and drops the shared index", async () => {
+    const now = Date.now();
+    const { storage, data } = fakeStorage({
+      "cache:old:x": entry(now - 1000),
+      "cache:orphan:x": entry(now - 2000), // missing from the old index (lost update)
+      "cache:broken:x": { chunks: [], cues: [] }, // no savedAt: cannot be trusted
+      "cache:expired:x": entry(now - CACHE_MAX_AGE_MS - 1),
+      [LEGACY_INDEX_KEY]: { "cache:old:x": now - 1000 },
+      settings: { enabled: true },
+    });
+    await evict(now, storage);
+    expect(entryKeys(data)).toEqual(["cache:old:x", "cache:orphan:x"]);
+    expect(metaKeys(data)).toEqual([metaKeyOf("cache:old:x"), metaKeyOf("cache:orphan:x")]);
+    expect(data.has(LEGACY_INDEX_KEY)).toBe(false);
+    expect(data.has("settings")).toBe(true);
   });
 });
 
