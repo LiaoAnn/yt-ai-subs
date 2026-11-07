@@ -162,6 +162,7 @@ const sample = (patch: Partial<HealthSample> = {}): HealthSample => ({
   inTracklist: true,
   selected: true,
   served: 1,
+  reloadWaitMs: 0,
   expected: [],
   shown: "",
   ...patch,
@@ -198,6 +199,17 @@ describe("TrackHealth", () => {
     health.observe(sample({ served: 0 }), 0);
     expect(health.observe(sample({ served: 0 }), 5999).mode).toBe("cc");
     expect(health.observe(sample({ served: 0 }), 6000).mode).toBe("overlay");
+  });
+
+  it("falls back when a reload never leads to a request", () => {
+    const health = new TrackHealth(limits);
+    expect(health.observe(sample({ reloadWaitMs: 5999 }), 0).mode).toBe("cc");
+    expect(health.observe(sample({ reloadWaitMs: 6000 }), 500)).toEqual({
+      mode: "overlay",
+      reason: "播放器沒有重新載入 AI 字幕軌",
+    });
+    expect(health.modeFor("v1")).toBe("overlay");
+    expect(health.modeFor("v2")).toBe("pending");
   });
 
   it("falls back when served captions stay off screen, and stays there", () => {

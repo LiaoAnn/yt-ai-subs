@@ -39,6 +39,16 @@ interface PlayerTrack {
 const CONTROL_MS = 500;
 const REPOST_MS = 5000;
 const DEBUG_LOG_MS = 10_000;
+/** Ask the player to reload again if it did not request the track this soon. */
+const RELOAD_RETRY_MS = 2000;
+
+function retryReload(player: YtPlayer) {
+  try {
+    player.setOption?.("captions", "reload", true);
+  } catch (error) {
+    console.warn(LOG_PREFIX, "could not reload the caption track", error);
+  }
+}
 /** Keep the events of this many videos (the current one plus a few back/forward). */
 const MAX_VIDEOS = 4;
 
@@ -50,6 +60,8 @@ interface VideoTrack {
   servedVersion: number;
   served: Json3Event[];
   requests: number;
+  /** When we last asked the player to reload the track and it has not requested it since. */
+  reloadAskedAt: number | null;
 }
 
 const tracks = new Map<string, VideoTrack>();
@@ -57,7 +69,14 @@ const tracks = new Map<string, VideoTrack>();
 function trackFor(videoId: string): VideoTrack {
   let track = tracks.get(videoId);
   if (!track) {
-    track = { events: [], version: 0, servedVersion: -1, served: [], requests: 0 };
+    track = {
+      events: [],
+      version: 0,
+      servedVersion: -1,
+      served: [],
+      requests: 0,
+      reloadAskedAt: null,
+    };
     tracks.set(videoId, track);
     while (tracks.size > MAX_VIDEOS) tracks.delete(tracks.keys().next().value!);
   }
@@ -90,6 +109,7 @@ function serve(videoId: string): string {
   track.requests++;
   track.servedVersion = track.version;
   track.served = track.events;
+  track.reloadAskedAt = null;
   console.log(LOG_PREFIX, `caption track served: ${track.events.length} events for ${videoId}`);
   const body: Json3 = { wireMagic: "pb3", events: track.events };
   return JSON.stringify(body);
@@ -254,6 +274,7 @@ function control() {
   let lastPosted = "";
   let lastPostedAt = 0;
   let lastDebug = 0;
+  let lastReloadCall = 0;
 
   setInterval(() => {
     const player = document.getElementById("movie_player") as YtPlayer | null;
@@ -283,7 +304,18 @@ function control() {
     const config = readConfig();
     const track = videoId ? trackFor(videoId) : null;
 
-    if (player && videoId && ours && config.enabled && !adShowing && !autoSelected.has(videoId)) {
+    // Never select the track for a video that already fell back to the overlay (the track
+    // can show up late): the captions would be shown twice.
+    const fellBack = health.modeFor(videoId) === "overlay";
+    if (
+      player &&
+      videoId &&
+      ours &&
+      config.enabled &&
+      !adShowing &&
+      !fellBack &&
+      !autoSelected.has(videoId)
+    ) {
       autoSelected.add(videoId);
       if (!selected) {
         try {
@@ -310,16 +342,19 @@ function control() {
           paused,
         })
       ) {
-        staleSince = 0;
-        track.servedVersion = track.version; // a failed reload must not retry every tick
-        try {
-          player.setOption?.("captions", "reload", true);
-        } catch (error) {
-          console.warn(LOG_PREFIX, "could not reload the caption track", error);
+        // Ask again only if the last reload did not lead to a request; the health check
+        // falls back if requests stop coming.
+        const now = Date.now();
+        if (now - lastReloadCall >= RELOAD_RETRY_MS) {
+          lastReloadCall = now;
+          track.reloadAskedAt ??= now;
+          retryReload(player);
         }
       }
     } else {
       staleSince = 0;
+      // Not selected (or never loaded): nothing is owed; a new selection makes a request.
+      if (track) track.reloadAskedAt = null;
     }
 
     const sample = {
@@ -328,6 +363,7 @@ function control() {
       inTracklist,
       selected,
       served: track?.requests ?? 0,
+      reloadWaitMs: track?.reloadAskedAt != null ? Date.now() - track.reloadAskedAt : 0,
       expected: track && selected ? activeEvents(track.served, t) : [],
       shown,
     };

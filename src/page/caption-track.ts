@@ -156,6 +156,8 @@ export interface HealthSample {
   selected: boolean;
   /** How many times the player requested our track for this video. */
   served: number;
+  /** How long a reload we asked for has gone without a request (0 if none is pending). */
+  reloadWaitMs: number;
   /** Events the player has loaded (the last ones served) that should be on screen now. */
   expected: readonly Json3Event[];
   /** Caption text YouTube's renderer shows right now. */
@@ -193,6 +195,11 @@ export class TrackHealth {
 
   constructor(private readonly limits = HEALTH_LIMITS) {}
 
+  /** The verdict for `videoId` so far ("pending" for a video not observed yet). */
+  modeFor(videoId: string | null): TrackMode {
+    return videoId !== null && videoId === this.videoId ? this.verdict.mode : "pending";
+  }
+
   observe(sample: HealthSample, now: number): HealthVerdict {
     if (sample.videoId !== this.videoId) {
       this.videoId = sample.videoId;
@@ -227,6 +234,9 @@ export class TrackHealth {
       return now - this.selectedSince >= this.limits.requestMs
         ? this.fail("播放器沒有載入 AI 字幕軌")
         : this.set("cc", "");
+    }
+    if (sample.reloadWaitMs >= this.limits.requestMs) {
+      return this.fail("播放器沒有重新載入 AI 字幕軌");
     }
     if (sample.expected.length) {
       if (showsAnyOf(sample.shown, sample.expected)) {

@@ -16,10 +16,11 @@ Code: `src/page/caption-track.ts` (pure logic, unit-tested), `src/page/caption-h
    - first load: `var ytInitialPlayerResponse = {…}` in an inline script → an accessor on `window` installed at `document_start` patches it in the setter;
    - SPA navigation: `fetch` of `/youtubei/v1/get_watch` (an array of parts; one is `{playerResponse}`) and prefetches through `/youtubei/v1/player` → the `fetch` wrapper patches the JSON and returns a new `Response`.
 3. **Serve the track.** The player loads caption tracks with `XMLHttpRequest` (`/api/timedtext?…&fmt=json3&potc=1&c=WEB…`, it appends its own parameters to our `baseUrl`). The XHR hook spots `ytaisubs=1`, never sends the request, and completes it itself with our json3 (`readyState`, `status`, `responseText`/`response` as own properties, then `readystatechange`, `load`, `loadend`). The `fetch` wrapper does the same in case YouTube moves to `fetch`. The content script sends the events with a `track-cues` window message (`PAGE_COMMAND_TAG`) whenever its cues change; the text is the translation, with the original on the line above when "翻譯上方顯示原文" is on.
-4. **Select and refresh.** Once per video, when the track shows up in `movie_player.getOption("captions", "tracklist")` and no ad is playing, the page script selects it with `setOption("captions", "track", <that entry>)`. If the viewer picks another track or turns captions off afterwards, that is respected until the next video. When new cues arrive and our track is selected, `setOption("captions", "reload", true)` makes the player request it again; the reload waits for a gap between captions (or at most 3 s) so the line on screen does not blink.
+4. **Select and refresh.** Once per video, when the track shows up in `movie_player.getOption("captions", "tracklist")` and no ad is playing, the page script selects it with `setOption("captions", "track", <that entry>)`. If the viewer picks another track or turns captions off afterwards, that is respected until the next video. When new cues arrive and our track is selected, `setOption("captions", "reload", true)` makes the player request it again; the reload waits for a gap between captions (or at most 3 s) so the line on screen does not blink, and is asked again every 2 s until the player actually requests the track. A video that already fell back is never auto-selected (the track can show up late).
 5. **Health check** (`TrackHealth`, every 500 ms), posted to the content script as `caption-mode` (`pending` / `cc` / `overlay`):
    - the track is not in the track list 8 s after the video loaded (ad time excluded) → overlay;
    - it is selected but the player never requested it within 6 s → overlay;
+   - a reload we asked for went 6 s without a request → overlay ("播放器沒有重新載入 AI 字幕軌");
    - 6 samples in a row (with no confirmed hit in between) in which a served event was active but its text was not in `.ytp-caption-segment` → overlay.
      A video that fell back stays on the overlay; the next video starts over. On fallback the page script deselects our track, so a false alarm never shows the captions twice. The content script also falls back on its own if the page script says nothing about the current video for 10 s.
 
@@ -48,7 +49,7 @@ agent-browser --session $S console | grep "yt-ai-subs" | grep -E "caption track|
 
 - `inTracklist:false` → step 2 (look for `caption track added to the player response <id>`; the ID must be the video that plays, not only prefetched ones).
 - `selected:true, served:0` → step 3 (the player did not request our URL; trace XHR/fetch to `/api/timedtext`).
-- `version` ≠ `servedVersion` for long → step 4 (reload not happening).
+- `version` ≠ `servedVersion` and `reloadWaitMs` growing → step 4 (`setOption("captions", "reload", true)` no longer refetches). Simulate it by replacing `movie_player.setOption` with one that ignores `"reload"`.
 - `expected:1` with `shown:""` → step 5 (renderer or selector changed).
 
 Probe the player from the page (eval runs in the MAIN world):
