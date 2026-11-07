@@ -15,11 +15,15 @@ import {
   DEFAULT_SETTINGS,
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES,
+  TRANSLATION_MODELS,
+  WHISPER_MODELS,
   loadSettings,
   saveSettings,
   type Settings,
   type SourceLanguage,
   type TargetLanguage,
+  type TranslationModel,
+  type WhisperModel,
 } from "@/shared/settings";
 
 type Status = "idle" | "saved" | "error";
@@ -65,6 +69,15 @@ export function App() {
         <CardContent className="px-4">
           <form onSubmit={onSave}>
             <fieldset className="grid gap-4" disabled={!loaded}>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="enabled">開啟 AI 字幕</Label>
+                <Switch
+                  id="enabled"
+                  checked={settings.enabled}
+                  onCheckedChange={(enabled) => update({ enabled })}
+                />
+              </div>
+
               <div className="grid gap-2">
                 <Label htmlFor="groq-api-key">Groq API key</Label>
                 <Input
@@ -75,6 +88,25 @@ export function App() {
                   value={settings.groqApiKey}
                   onChange={(event) => update({ groqApiKey: event.target.value.trim() })}
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="whisper-model">語音辨識模型</Label>
+                <Select
+                  value={settings.whisperModel}
+                  onValueChange={(value) => update({ whisperModel: value as WhisperModel })}
+                >
+                  <SelectTrigger id="whisper-model" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {WHISPER_MODELS.map((model) => (
+                      <SelectItem key={model.value} value={model.value}>
+                        {model.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="grid gap-2">
@@ -123,6 +155,36 @@ export function App() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="translation-model">翻譯模型</Label>
+                <Select
+                  value={settings.translationModel}
+                  disabled={!settings.translate}
+                  onValueChange={(value) => update({ translationModel: value as TranslationModel })}
+                >
+                  <SelectTrigger id="translation-model" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TRANSLATION_MODELS.map((model) => (
+                      <SelectItem key={model.value} value={model.value}>
+                        {model.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="show-original">翻譯上方顯示原文</Label>
+                <Switch
+                  id="show-original"
+                  checked={settings.showOriginal}
+                  disabled={!settings.translate}
+                  onCheckedChange={(showOriginal) => update({ showOriginal })}
+                />
               </div>
 
               <div className="flex items-center gap-3">

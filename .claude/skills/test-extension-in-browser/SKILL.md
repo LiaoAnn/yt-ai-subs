@@ -33,6 +33,9 @@ agent-browser --session $S console | grep yt-ai-subs
 - `--no-sandbox` is required on the dev VM: Chrome dies with `No usable sandbox!` because Ubuntu's AppArmor blocks unprivileged user namespaces.
 - Add `--headed` only when someone needs to watch on the shared desktop; headless works for everything below.
 - Extensions do not run in incognito; agent-browser's default profile is fine.
+- The session's profile is temporary: `close` wipes `chrome.storage` (settings, key, cache). To load a rebuild, `close` and start again, then set the settings again. Do not call `chrome.runtime.reload()`: it leaves an extension loaded with `--extension` disabled.
+- Headless autoplay is blocked (`play()` rejects with `NotAllowedError`): set `video.muted = true` before `play()`. Muted playback still feeds MediaSource, so the hook gets the audio.
+- **YouTube stops this browser after about 20–40 s of playback** ("Something went wrong. Refresh or try again later."), headless or `--headed`, with or without the extension (checked both ways), and any seek triggers it at once. Plan each run around one fresh load: start mid-video with `&t=300s` instead of seeking, and read what you need within ~30 s.
 
 Expected console lines (all entries log with the `[yt-ai-subs]` prefix):
 
@@ -67,11 +70,22 @@ To test saving, use a fake key (e.g. `gsk_fake_not_a_real_key`), never a real on
 agent-browser --session $S eval "chrome.storage.local.get('settings').then(s => ({...s.settings, groqApiKey: s.settings.groqApiKey ? '(set, ' + s.settings.groqApiKey.length + ' chars)' : ''}))"
 ```
 
-## 4. Service worker logs
+## 4. Logs and state
 
-The background's own `console.log` lines go to the service worker, not the page console. The `background replied` line in the page console is enough for a smoke test; for more, inspect the worker from `chrome://extensions` (Details → "Inspect views: service worker") in a `--headed` session.
+The background's own `console.log` lines go to the service worker, not the page console. The content script logs what matters to the page console instead, so `console | grep yt-ai-subs` shows it:
 
-## 5. Evidence and cleanup
+- `whisper <start>–<end> s (<n> s audio): <ms> ms[, waited <ms> ms for the rate limit], <n> lines`
+- `translation <start>–<end> s: <n> lines, <tokens> tokens, <ms> ms`
+- `first caption <ms> ms after play/seek`, `cancel <range> (playhead <t>)`, `cache hit: …`
+- every 10 s, `state {…}`: buffered audio ranges, jobs in flight, cue count, last error, and why nothing was sent (`reason`).
+
+From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chrome.storage.local` (`cache:*`, `cacheIndex`) and `chrome.storage.session` (`rateLimiter`: the limiter's log and the budgets Groq reported in its `x-ratelimit-*` headers).
+
+## 5. With a real Groq key (only with the user's OK for that run)
+
+Never print the key or put it on a command line. Pipe the script into `eval --stdin` and return only its length, e.g. a script that runs `python3 -I` to read the key file and print `chrome.storage.local.set({settings: {...stored, groqApiKey: <json>}})` JS, piped into `agent-browser --session $S eval --stdin`, run on the popup page. Count usage from the `whisper` / `translation` log lines (Groq bills each transcription as at least 10 s).
+
+## 6. Evidence and cleanup
 
 - `agent-browser --session $S screenshot <scratchpad>/<name>.png` for the YouTube page and the popup.
 - `agent-browser --session $S close` when done.

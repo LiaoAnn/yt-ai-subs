@@ -20,6 +20,10 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 - **Where captions appear**: in YouTube's own caption (CC) menu as a selectable track, not only as a custom overlay. An overlay is acceptable only as a fallback when the menu hook breaks.
 - **Audio source**: copy the audio YouTube already appends to its MediaSource buffers (hook `SourceBuffer.prototype.appendBuffer` in the page's MAIN world). Never download media from googlevideo directly.
 - **Chunking**: request roughly 30–60 s ahead of the playhead; a short first chunk after start/seek; cancel or deprioritise work that a seek made irrelevant; prefer cutting at silences over a fixed grid.
+- **Rate limiting**: every Groq request goes through one limiter in the background (`src/background/rate-limiter.ts`), with our own ceilings a little under the free tier: Whisper 18 req/min and 7,000 audio s/hour (each request billed as at least 10 s, as Groq does); gpt-oss 28 req/min and 7,500 tokens/min. It also obeys Groq's `x-ratelimit-remaining-*` / `x-ratelimit-reset-*` headers (Groq sends `requests` (per day), `tokens`, `audio-seconds`) and a 429's `retry-after`, and its log survives service worker restarts in `chrome.storage.session`.
+- **Translation requests**: `reasoning_effort: "low"`, JSON mode, lines sent and returned as a numbered object (`{"1": …, "2": …}`). A plain list let the model merge a sentence split over two lines and shift every later translation by one.
+- **Caption data**: `Cue` (`src/shared/captions.ts`, seconds, `original` + optional `translation`) converts one-to-one to YouTube timedtext json3 (`toJson3`), for the later CC-menu stage. Until then captions are an overlay.
+- **Cache**: finished chunks per video and per caption-shaping settings in `chrome.storage.local` (`cache:<video>:<whisper model>:<language>:<translation or none>`), at most 50 entries and 30 days, tracked in `cacheIndex`. Chunks whose translation failed are not cached.
 
 ## Stack
 
@@ -37,7 +41,8 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 - `src/content/` isolated-world content script (chunking, scheduling, captions).
 - `src/background/` service worker (speech-to-text and translation API calls).
 - `src/popup/` settings popup (React); `src/components/ui/` shadcn/ui components (add more with `pnpm dlx shadcn@<version> add <name>`, then check that imports use `@/lib/utils`).
-- `src/shared/` code shared by the entry points: message types (`messages.ts`), settings and `chrome.storage.local` access (`settings.ts`), the `[yt-ai-subs]` log prefix (`log.ts`).
+- `src/shared/` code shared by the entry points: message types (`messages.ts`), settings and `chrome.storage.local` access (`settings.ts`), caption data (`captions.ts`), YouTube URL helpers (`youtube.ts`), the `[yt-ai-subs]` log prefix (`log.ts`).
+- Pure logic lives in its own module with a `*.test.ts` next to it (Vitest, Node environment, no `chrome.*`): WebM parsing, audio coverage, scheduling, segmentation, rate limiting, cache eviction. Keep browser glue (`index.ts`, `wav.ts`'s decoding, `overlay.ts`) thin. Test fixtures go in `src/test/`.
 
 ## Scripts
 
@@ -46,7 +51,8 @@ Run them in the dev container (see the next section).
 - `pnpm build` builds the unpacked extension into `dist/` (production, minified).
 - `pnpm dev` rebuilds `dist/` on change (development, inline source maps). Reload the extension in `chrome://extensions` (and the YouTube tab) after a rebuild. Changes to `public/manifest.json` need a restart of `pnpm dev`.
 - `pnpm typecheck` (`tsc -b`), `pnpm lint` (oxlint), `pnpm format` / `pnpm format:check` (oxfmt).
-- `pnpm check` runs typecheck, lint and format:check; it must pass before a commit.
+- `pnpm test` runs the unit tests (Vitest, `vitest.config.ts`).
+- `pnpm check` runs typecheck, lint, format:check and test; it must pass before a commit.
 
 ## Development environment
 
