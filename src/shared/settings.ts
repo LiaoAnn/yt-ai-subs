@@ -44,6 +44,8 @@ export interface Settings {
    * envelope and cues in chrome.storage.local (`debug:*`) for offline evaluation.
    */
   debugCapture: boolean;
+  /** Development only: with debugCapture, record audio features but call no API. */
+  debugDryRun: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   translationModel: "openai/gpt-oss-120b",
   showOriginal: true,
   debugCapture: false,
+  debugDryRun: false,
 };
 
 export const SETTINGS_STORAGE_KEY = "settings";

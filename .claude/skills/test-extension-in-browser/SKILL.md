@@ -110,6 +110,10 @@ To judge timing and line breaks without paying for the same audio twice, record 
 
 5. On-screen timing (native CC or overlay): sample `.ytp-caption-segment` (and `#yt-ai-subs-captions`) text with `video.currentTime` every 100 ms from a page eval, and compare when each cue's text first appears with its `start`. The CC track only changes after YouTube reloads it (`setOption("captions","reload")`, which waits for a gap between captions, up to 3 s), so measure there, not from the cue list.
 
+Tuning without the API: add `debugDryRun: true` (and no key) to the settings. Chunks are then decoded, measured (loudness and `voiceFeatures`) and saved as captures, but nothing is sent. Playing at `video.playbackRate = 2` halves the wall time. Line up the features with an earlier capture of the same video, using its Whisper segments as the speech labels.
+
+Re-translating saved lines without Whisper: `node scripts/qa-replay.ts --json <capture>` prints the lines per chunk. From the popup page, send each chunk as `chrome.runtime.sendMessage({type: "translate", requestId, lines, context})`; the background answers with the real prompt and limiter, and the key never leaves it. Pace the calls (about 12 s apart): when the limiter makes a call wait longer than agent-browser's eval timeout, the eval comes back empty, but the request still runs and is billed.
+
 Groq usage for a run: count the `whisper … (<n> s audio)` and `translation …, <n> tokens` lines in the console (Groq bills each transcription as at least 10 s), and read `rateLimiter` from `chrome.storage.session` for the remaining budgets Groq reported.
 
 ## 7. Evidence and cleanup

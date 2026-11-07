@@ -7,6 +7,7 @@ import type { Cue } from "@/shared/captions";
 import { LOG_PREFIX } from "@/shared/log";
 import type { Settings } from "@/shared/settings";
 import { FRAME_SECONDS } from "./energy";
+import type { VoiceFeatures } from "./voice";
 
 export const DEBUG_PREFIX = "debug:";
 
@@ -26,6 +27,8 @@ export interface DebugCapture {
   /** Loudness of the audio sent, dBFS per `frameSeconds`, from `start`. */
   envelope: number[];
   frameSeconds: number;
+  /** Spectral features per 20 ms frame (voiceFeatures), from `start`. */
+  voice?: VoiceFeatures;
   /** The cues shown for this chunk, on the video's timeline. */
   cues: Cue[];
   savedAt: number;

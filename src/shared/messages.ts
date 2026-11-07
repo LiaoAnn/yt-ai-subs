@@ -158,7 +158,7 @@ export interface TranslateMessage {
   type: "translate";
   requestId: string;
   lines: string[];
-  /** Previous lines, for context only. */
+  /** Previous lines ("original → translation" when translated), for context only. */
   context: string;
 }
 

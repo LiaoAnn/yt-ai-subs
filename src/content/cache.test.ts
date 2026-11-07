@@ -15,6 +15,11 @@ describe("cacheKey", () => {
     expect(transcribeOnly).toBe("cache:vid:whisper-large-v3:ja:none");
     // Settings that only change the display share the entry.
     expect(cacheKey("vid", { ...DEFAULT_SETTINGS, showOriginal: false })).toBe(translated);
+    // Dry runs (no captions) never share an entry with real captions.
+    expect(
+      cacheKey("vid", { ...DEFAULT_SETTINGS, debugCapture: true, debugDryRun: true }),
+    ).not.toBe(translated);
+    expect(cacheKey("vid", { ...DEFAULT_SETTINGS, debugDryRun: true })).toBe(translated);
   });
 });
 

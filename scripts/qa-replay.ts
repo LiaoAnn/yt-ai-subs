@@ -6,6 +6,8 @@
 //   node scripts/qa-replay.ts <file-or-dir>...            summary per video and overall
 //   node scripts/qa-replay.ts --cues <file-or-dir>...     also every line with its timing
 //   node scripts/qa-replay.ts --saved <file-or-dir>...    use the cues saved at capture time
+//   node scripts/qa-replay.ts --json <file-or-dir>...     print the lines per chunk as JSON
+//                                                         (video timeline), e.g. to re-translate
 //
 // A file holds one capture, an array of captures, or an object of them (as exported).
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -20,6 +22,7 @@ interface Capture extends CaptureLike {
 const args = process.argv.slice(2);
 const showCues = args.includes("--cues");
 const useSaved = args.includes("--saved");
+const asJson = args.includes("--json");
 const paths = args.filter((a) => !a.startsWith("--"));
 if (!paths.length) {
   console.error("usage: node scripts/qa-replay.ts [--cues] [--saved] <file-or-dir>...");
@@ -59,6 +62,22 @@ const cuesOf = (c: CaptureLike) =>
         end: cue.end - c.start,
       }))
     : replayCues(c);
+
+if (asJson) {
+  const chunks = captures
+    .toSorted((a, b) => a.videoId.localeCompare(b.videoId) || a.start - b.start)
+    .map((c) => ({
+      videoId: c.videoId,
+      start: c.start,
+      end: c.end,
+      cues: cuesOf(c)
+        .map((cue) => ({ ...cue, start: c.start + cue.start, end: c.start + cue.end }))
+        // what was shown: lines after a trimmed end were sent again with the next chunk
+        .filter((cue) => cue.start < c.end - 0.05),
+    }));
+  console.log(JSON.stringify(chunks));
+  process.exit(0);
+}
 
 const byVideo = new Map<string, Capture[]>();
 for (const capture of captures) {

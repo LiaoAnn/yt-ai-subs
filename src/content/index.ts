@@ -33,6 +33,7 @@ import {
   trimCutSentence,
   type Job,
 } from "./schedule";
+import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
@@ -50,12 +51,44 @@ const DEBUG_LOG_MS = 10_000;
 /** A flexible chunk end moves to the quietest moment up to this far earlier or later. */
 const CUT_EARLIER_SECONDS = 6;
 const CUT_LATER_SECONDS = 4;
+/** A chunk waits at most this long for the chunk before it, to use it as context. */
+const CONTEXT_WAIT_MS = 5000;
+
+/**
+ * The running chunk that ends where `job` starts, if any. During a start-up burst the next
+ * chunk is decoded while this one is still at Groq; it waits for it, so that its Whisper
+ * prompt and translation context are not empty.
+ */
+function runningPredecessor(target: VideoState, job: JobRecord): JobRecord | undefined {
+  for (const other of target.jobs.values()) {
+    if (other !== job && other.status === "running" && Math.abs(other.end - job.start) < 0.3) {
+      return other;
+    }
+  }
+  return undefined;
+}
+
+/** Resolves when `ready()` holds, the signal aborts, or after `timeoutMs`; returns ms waited. */
+async function waitUntil(ready: () => boolean, timeoutMs: number, signal: AbortSignal) {
+  const since = Date.now();
+  while (!ready() && !signal.aborted && Date.now() - since < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return Date.now() - since;
+}
+
+const recentLines = (target: VideoState, start: number) =>
+  target.cues
+    .filter((cue) => cue.end <= start + 0.5 && cue.end > start - CONTEXT_SECONDS)
+    .slice(-CONTEXT_LINES);
 
 interface JobRecord extends Job {
   id: number;
   controller: AbortController | null;
   /** Translation failed: shown in the original, and not cached. */
   untranslated: boolean;
+  /** Its original lines are in (the next chunk can use them as Whisper's prompt). */
+  transcribed?: boolean;
 }
 
 interface VideoState {
@@ -277,9 +310,43 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     }
     const samples = rendered.samples.subarray(0, Math.round(duration * WAV_SAMPLE_RATE));
     const audio = { wav: encodeWav(samples, WAV_SAMPLE_RATE), duration, samples };
-    const previous = target.cues
-      .filter((cue) => cue.end <= job.start + 0.5 && cue.end > job.start - CONTEXT_SECONDS)
-      .slice(-CONTEXT_LINES);
+    // Skip stretches without a voice (background music, silence): they cost money and
+    // Whisper makes up text for them.
+    const voice = voiceFeatures(samples, WAV_SAMPLE_RATE);
+    const voiced = bestVoicedWindow(voice);
+    const dryRun = settings.debugCapture && settings.debugDryRun;
+    if (voiced < MIN_VOICED_SHARE || dryRun) {
+      if (settings.debugCapture) {
+        saveDebugCapture(settings, {
+          videoId: target.videoId,
+          start: job.start,
+          end: job.end,
+          sentSeconds: dryRun ? duration : 0,
+          context: "",
+          raw: null,
+          envelope: energyEnvelope(samples, WAV_SAMPLE_RATE),
+          voice,
+          cues: [],
+        });
+      }
+      console.log(
+        LOG_PREFIX,
+        `${dryRun ? "dry run" : "no voice, skipped"} ${label} (voiced ${Math.round(voiced * 100)}%)`,
+      );
+      job.status = "done";
+      if (!dryRun) persist(target); // a skipped stretch costs nothing when watched again
+      return;
+    }
+    const before = runningPredecessor(target, job);
+    let contextWaitMs = 0;
+    if (before) {
+      contextWaitMs = await waitUntil(
+        () => before.transcribed === true || before.status !== "running",
+        CONTEXT_WAIT_MS,
+        signal,
+      );
+    }
+    const previous = recentLines(target, job.start);
     const asrRequest: RuntimeMessage = {
       type: "transcribe",
       requestId: asrId!,
@@ -296,8 +363,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       LOG_PREFIX,
       `whisper ${label} (${audio.duration.toFixed(1)} s audio` +
         (cutDb === null ? "" : `, cut at ${cutDb} dB${cutInPause ? " (pause)" : ""}`) +
+        `, voiced ${Math.round(voiced * 100)}%` +
         `): ${asr.latencyMs} ms` +
         (asr.waitedMs ? `, waited ${asr.waitedMs} ms for the rate limit` : "") +
+        (before ? `, waited ${contextWaitMs} ms for the chunk before` : "") +
         `, ${asr.cues.length} lines`,
     );
 
@@ -327,13 +396,29 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     // Show the original right away; the translation replaces it when it arrives.
     target.cues.push(...fresh);
     target.cues = target.cues.toSorted((a, b) => a.start - b.start);
+    job.transcribed = true;
 
     if (settings.translate && fresh.length) {
+      // Translate with the chunk before already translated, so names and terms carry over.
+      if (before) {
+        contextWaitMs += await waitUntil(
+          () => before.status !== "running",
+          CONTEXT_WAIT_MS,
+          signal,
+        );
+        if (signal.aborted || state !== target) {
+          // Cancelled while waiting (seek, other video, turned off): send nothing.
+          target.cues = target.cues.filter((cue) => !fresh.includes(cue));
+          return;
+        }
+      }
       const trRequest: RuntimeMessage = {
         type: "translate",
         requestId: trId!,
         lines: fresh.map((cue) => cue.original),
-        context: previous.map((cue) => cue.translation ?? cue.original).join("\n"),
+        context: recentLines(target, job.start)
+          .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
+          .join("\n"),
       };
       const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
       if (signal.aborted || state !== target) {
@@ -369,6 +454,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         context: asrRequest.context,
         raw: asr.raw ?? null,
         envelope: energyEnvelope(audio.samples, WAV_SAMPLE_RATE),
+        voice,
         cues: fresh,
       });
     }
@@ -509,7 +595,7 @@ function tick() {
     diag.reason = "讀取快取中";
     return;
   }
-  if (!settings.groqApiKey) {
+  if (!settings.groqApiKey && !(settings.debugCapture && settings.debugDryRun)) {
     diag.reason = "沒有 API key";
     return;
   }

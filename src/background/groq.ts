@@ -204,13 +204,17 @@ export async function translate(
   onLimiterChange: () => void,
 ): Promise<TranslateResult> {
   const system = `You are a professional subtitle translator. Translate subtitle lines into ${targetLanguageName(settings)}.
-The input is a JSON object of numbered lines. A line is often only part of a sentence that continues on the next line:
-translate each line on its own, as the matching part of the sentence, and never move words to another line or merge lines.
-Use a natural, concise spoken style; keep names consistent; fix obvious speech-recognition mistakes using context;
-keep a line that is already in the target language.
+The input is a JSON object of numbered lines, consecutive pieces of speech from a video.
+- The text comes from speech recognition and has mistakes: similar-sounding wrong words, garbled bits. Work out what was most likely said from the context and translate that.
+- A line is often only part of a sentence that continues on the next line: translate it as the matching part of that sentence, so the lines read naturally in order.
+- Every key's value translates that same key's line and nothing else: never move words to another key, never merge, skip or split lines, even when lines repeat.
+- Translate idioms and slang by meaning, not word for word.
+- Write natural, concise subtitles in the spoken style of the target language${settings.targetLanguage === "zh-TW" ? " as used in Taiwan (Taiwanese vocabulary, no Mainland terms)" : ""}. Leave out pure fillers (えっと, あの, まあ, 그, 뭐, um); a line that is only a filler gets a short natural interjection.
+- Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout.
+- Keep a line that is already in the target language.
 Reply ONLY with a JSON object with exactly the same keys: {"1": "...", "2": "...", ...}`;
   const user =
-    (context ? `Previous lines for context (do not translate):\n${context}\n\n` : "") +
+    (context ? `Previous lines (original → translation), for context only:\n${context}\n\n` : "") +
     `Lines to translate (${lines.length}):\n${JSON.stringify(numberLines(lines))}`;
   const estimate = estimateChatTokens(system.length + user.length, lines.length);
   const { response, entryId, stats } = await limitedFetch(

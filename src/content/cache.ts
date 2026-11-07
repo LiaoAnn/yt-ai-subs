@@ -29,7 +29,9 @@ export function cacheKey(videoId: string, settings: Settings): string {
   const translation = settings.translate
     ? `${settings.translationModel}:${settings.targetLanguage}`
     : "none";
-  return `${CACHE_PREFIX}${videoId}:${settings.whisperModel}:${settings.sourceLanguage}:${translation}`;
+  // A dry run (development) produces no captions: keep it apart from the real entry.
+  const dry = settings.debugCapture && settings.debugDryRun ? ":dry-run" : "";
+  return `${CACHE_PREFIX}${videoId}:${settings.whisperModel}:${settings.sourceLanguage}:${translation}${dry}`;
 }
 
 export function isExpired(entry: Pick<CacheEntry, "savedAt">, now: number): boolean {
