@@ -68,7 +68,7 @@ function fakeStorage(initial: Record<string, unknown> = {}) {
   const storage: CacheStorage = {
     async get(keys) {
       await later();
-      const list = typeof keys === "string" ? [keys] : keys;
+      const list = keys === null ? [...data.keys()] : typeof keys === "string" ? [keys] : keys;
       return Object.fromEntries(list.filter((k) => data.has(k)).map((k) => [k, data.get(k)]));
     },
     async set(items) {
@@ -79,7 +79,7 @@ function fakeStorage(initial: Record<string, unknown> = {}) {
       await later();
       for (const k of typeof keys === "string" ? [keys] : keys) data.delete(k);
     },
-    async getKeys() {
+    async getKeys(): Promise<string[]> {
       await later();
       return [...data.keys()];
     },
@@ -141,6 +141,65 @@ describe("saveCache with several tabs", () => {
     expect(metaKeys(data)).toEqual([metaKeyOf("cache:old:x"), metaKeyOf("cache:orphan:x")]);
     expect(data.has(LEGACY_INDEX_KEY)).toBe(false);
     expect(data.has("settings")).toBe(true);
+  });
+});
+
+describe("cache edge cases", () => {
+  it("keeps an entry another tab saved again while eviction was deciding", async () => {
+    const now = Date.now();
+    const initial: Record<string, unknown> = {};
+    for (let i = 0; i <= CACHE_MAX_ENTRIES; i++) {
+      initial[`cache:v${i}:x`] = entry(now - 1000 + i);
+      initial[metaKeyOf(`cache:v${i}:x`)] = now - 1000 + i;
+    }
+    const { storage, data } = fakeStorage(initial);
+    const get = storage.get.bind(storage);
+    let refreshed = false;
+    storage.get = async (keys) => {
+      const result = await get(keys);
+      // Right after eviction read the meta keys, another tab saves v0 (the oldest) again.
+      if (!refreshed && Array.isArray(keys) && keys.includes(metaKeyOf("cache:v0:x"))) {
+        refreshed = true;
+        data.set("cache:v0:x", entry(now + 5));
+        data.set(metaKeyOf("cache:v0:x"), now + 5);
+      }
+      return result;
+    };
+    await evict(now, storage);
+    expect(data.get("cache:v0:x")).toEqual(entry(now + 5));
+    expect(data.get(metaKeyOf("cache:v0:x"))).toBe(now + 5);
+  });
+
+  it("works without storage.getKeys (Chrome before 130)", async () => {
+    const { storage, data } = fakeStorage();
+    delete storage.getKeys;
+    const now = Date.now();
+    for (let i = 0; i < CACHE_MAX_ENTRIES + 2; i++) {
+      await saveCache(`cache:v${i}:x`, entry(now + i), storage);
+    }
+    expect(entryKeys(data)).toHaveLength(CACHE_MAX_ENTRIES);
+    expect(data.has("cache:v0:x")).toBe(false);
+  });
+
+  it("evicts and retries when the storage area is full", async () => {
+    const now = Date.now();
+    const initial: Record<string, unknown> = {};
+    for (let i = 0; i < CACHE_MAX_ENTRIES; i++) {
+      initial[`cache:v${i}:x`] = entry(now - CACHE_MAX_AGE_MS * 2); // all expired
+      initial[metaKeyOf(`cache:v${i}:x`)] = now - CACHE_MAX_AGE_MS * 2;
+    }
+    const { storage, data } = fakeStorage(initial);
+    const set = storage.set.bind(storage);
+    // A storage area that holds at most CACHE_MAX_ENTRIES entries (plus their meta keys).
+    storage.set = async (items) => {
+      const adding = Object.keys(items).filter((k) => k.startsWith(CACHE_PREFIX) && !data.has(k));
+      if (entryKeys(data).length + adding.length > CACHE_MAX_ENTRIES) {
+        throw new Error("QUOTA_BYTES quota exceeded");
+      }
+      await set(items);
+    };
+    await saveCache("cache:new:x", entry(now), storage);
+    expect(entryKeys(data)).toEqual(["cache:new:x"]);
   });
 });
 

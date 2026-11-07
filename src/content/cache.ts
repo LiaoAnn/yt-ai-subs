@@ -36,10 +36,16 @@ const entryKeyOf = (metaKey: string) => CACHE_PREFIX + metaKey.slice(CACHE_META_
 
 /** The parts of chrome.storage.local the cache uses (tests pass a fake). */
 export interface CacheStorage {
-  get(keys: string | string[]): Promise<Record<string, unknown>>;
+  get(keys: string | string[] | null): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
   remove(keys: string | string[]): Promise<void>;
-  getKeys(): Promise<string[]>;
+  /** Chrome 130+; older versions list the keys by reading everything. */
+  getKeys?(): Promise<string[]>;
+}
+
+async function listKeys(storage: CacheStorage): Promise<string[]> {
+  if (typeof storage.getKeys === "function") return storage.getKeys();
+  return Object.keys(await storage.get(null));
 }
 
 const local = (): CacheStorage => chrome.storage.local;
@@ -86,13 +92,22 @@ export async function loadCache(
   return isExpired(entry, Date.now()) ? null : entry;
 }
 
-/** Saves one entry with its meta key in a single write, then evicts. */
+/**
+ * Saves one entry with its meta key in a single write, then evicts. If the write fails
+ * (storage full), evicts first and tries once more, so a full storage area recovers.
+ */
 export async function saveCache(
   key: string,
   entry: CacheEntry,
   storage: CacheStorage = local(),
 ): Promise<void> {
-  await storage.set({ [key]: entry, [metaKeyOf(key)]: entry.savedAt });
+  const items = { [key]: entry, [metaKeyOf(key)]: entry.savedAt };
+  try {
+    await storage.set(items);
+  } catch {
+    await evict(entry.savedAt, storage, CACHE_MAX_ENTRIES - 1);
+    await storage.set(items);
+  }
   await evict(entry.savedAt, storage);
 }
 
@@ -101,8 +116,12 @@ export async function saveCache(
  * keys (rebuilt first for entries that have none). Safe to run in several tabs at once:
  * it only ever removes whole entries with their meta keys.
  */
-export async function evict(now: number, storage: CacheStorage = local()): Promise<void> {
-  const keys = await storage.getKeys();
+export async function evict(
+  now: number,
+  storage: CacheStorage = local(),
+  maxEntries = CACHE_MAX_ENTRIES,
+): Promise<void> {
+  const keys = await listKeys(storage);
   const metaKeys = keys.filter((key) => key.startsWith(CACHE_META_PREFIX));
   const withMeta = new Set(metaKeys.map(entryKeyOf));
   const missing = keys.filter((key) => key.startsWith(CACHE_PREFIX) && !withMeta.has(key));
@@ -127,6 +146,14 @@ export async function evict(now: number, storage: CacheStorage = local()): Promi
     if (keys.includes(LEGACY_INDEX_KEY)) await storage.remove(LEGACY_INDEX_KEY);
   }
 
-  const evicted = selectEvictions(index, now);
+  const candidates = selectEvictions(index, now, maxEntries);
+  if (!candidates.length) return;
+  // Another tab may have saved one of them meanwhile (a fresh savedAt): keep those.
+  const current = await storage.get(candidates.map(metaKeyOf));
+  const evicted = candidates.filter((key) => {
+    const savedAt = current[metaKeyOf(key)];
+    const was = index[key]!;
+    return savedAt === undefined ? !Number.isFinite(was) : savedAt === was;
+  });
   if (evicted.length) await storage.remove(evicted.flatMap((key) => [key, metaKeyOf(key)]));
 }

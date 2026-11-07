@@ -121,15 +121,19 @@ let settingsLoaded = false;
 let state: VideoState | null = null;
 let nextJobId = 1;
 let quota: QuotaLevels = { whisper: "ok", chat: "ok" };
+/** Nothing is sent until the background has said how much budget is left. */
+let quotaKnown = false;
 let quotaAskedAt = 0;
 
 /** Keeps `quota` fresh, so the scheduler notices a budget reset or running low. */
 function refreshQuota() {
-  if (Date.now() - quotaAskedAt < QUOTA_REFRESH_MS) return;
+  if (Date.now() - quotaAskedAt < (quotaKnown ? QUOTA_REFRESH_MS : 2000)) return;
   quotaAskedAt = Date.now();
   chrome.runtime.sendMessage({ type: "get-quota" } satisfies RuntimeMessage).then(
     (reply: QuotaReply | undefined) => {
-      if (reply?.type === "quota") quota = reply.levels;
+      if (reply?.type !== "quota") return;
+      quota = reply.levels;
+      quotaKnown = true;
     },
     () => {
       // The service worker is restarting; ask again next time.
@@ -390,6 +394,11 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       context: previous.map((cue) => cue.original).join(" "),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
+    if (quota.whisper === "out") {
+      // The day's budget ran out while this chunk was decoding: send nothing.
+      target.jobs.delete(job.id);
+      return;
+    }
     const asr = (await chrome.runtime.sendMessage(asrRequest)) as TranscribeReply | undefined;
     if (signal.aborted || state !== target) return;
     if (!asr) throw new Error("背景程式沒有回應");
@@ -671,7 +680,13 @@ function tick() {
     diag.reason = "廣告中";
     return;
   }
-  if (!(settings.debugCapture && settings.debugDryRun)) refreshQuota();
+  if (!(settings.debugCapture && settings.debugDryRun)) {
+    refreshQuota();
+    if (!quotaKnown) {
+      diag.reason = "讀取 Groq 額度中";
+      return;
+    }
+  }
   schedule(target, v);
 }
 
