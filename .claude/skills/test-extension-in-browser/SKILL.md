@@ -35,7 +35,13 @@ agent-browser --session $S console | grep yt-ai-subs
 - Extensions do not run in incognito; agent-browser's default profile is fine.
 - The session's profile is temporary: `close` wipes `chrome.storage` (settings, key, cache). To load a rebuild, `close` and start again, then set the settings again. Do not call `chrome.runtime.reload()`: it leaves an extension loaded with `--extension` disabled.
 - Headless autoplay is blocked (`play()` rejects with `NotAllowedError`): set `video.muted = true` before `play()`. Muted playback still feeds MediaSource, so the hook gets the audio.
-- **YouTube stops this browser after about 20–40 s of playback** ("Something went wrong. Refresh or try again later."), headless or `--headed`, with or without the extension (checked both ways), and any seek triggers it at once. Plan each run around one fresh load: start mid-video with `&t=300s` instead of seeking, and read what you need within ~30 s.
+- **Start the browser with a normal user agent and without the automation flag**, or YouTube stops playback after about 20–40 s ("Something went wrong. Refresh or try again later."), and at once on any seek. It takes both: `--user-agent` with a plain `Chrome/<version>` (not `HeadlessChrome`) and `--disable-blink-features=AutomationControlled` (so `navigator.webdriver` is false). Either one alone still failed (1 run each); with both, playback ran 5+ minutes and seeks worked. No account, no persistent profile needed.
+
+  ```bash
+  UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+  agent-browser --session $S --extension <path>/dist --user-agent "$UA" \
+    --args "--no-sandbox,--disable-blink-features=AutomationControlled" open "https://www.youtube.com/watch?v=<id>&t=60s"
+  ```
 
 Expected console lines (all entries log with the `[yt-ai-subs]` prefix):
 
@@ -85,7 +91,28 @@ From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chr
 
 Never print the key or put it on a command line. Pipe the script into `eval --stdin` and return only its length, e.g. a script that runs `python3 -I` to read the key file and print `chrome.storage.local.set({settings: {...stored, groqApiKey: <json>}})` JS, piped into `agent-browser --session $S eval --stdin`, run on the popup page. Count usage from the `whisper` / `translation` log lines (Groq bills each transcription as at least 10 s).
 
-## 6. Evidence and cleanup
+## 6. Evaluating caption quality offline (debug captures)
+
+To judge timing and line breaks without paying for the same audio twice, record what each chunk produced and re-run segmentation on it locally.
+
+1. Turn on `debugCapture` (a setting not shown in the popup) together with the key, from the popup page: `chrome.storage.local.set({settings: {...stored, debugCapture: true}})`. Then every finished chunk is saved as `debug:<video>:<start>` in `chrome.storage.local`: Whisper's raw `verbose_json`, the prompt sent, a loudness envelope (dBFS per 20 ms, no audio) and the cues shown.
+2. Play the video (muted) for as long as you want to evaluate; pause and wait ~20 s so in-flight chunks finish.
+3. Export from the popup page and delete them, e.g. `chrome.storage.local.get(null).then(all => JSON.stringify(Object.fromEntries(Object.entries(all).filter(([k]) => k.startsWith('debug:')))))`, saved as a JSON file under `.qa/` (gitignored) or your scratchpad. Never commit captures: they are other people's transcripts.
+4. Re-run segmentation on them in the dev container (no API calls):
+
+   ```bash
+   T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-replay.ts .qa/            # per video + overall statistics
+   T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-replay.ts --cues .qa/x.json   # every line with its timing
+   T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-replay.ts --saved .qa/x.json  # the lines as shown at capture time
+   ```
+
+   The summary has chunk count and length, `startError` / `endError` (line edge minus the speech onset/offset found in the envelope, only for lines next to a pause; positive = late), line length and duration, `badBreaks` (line split inside a word), `tinyLines`, `cutSentences`. Compare `--saved` with a replay to see what a segmentation change does to the same audio. The envelope measure is noisy with background music or several speakers; read the lines too.
+
+5. On-screen timing (native CC or overlay): sample `.ytp-caption-segment` (and `#yt-ai-subs-captions`) text with `video.currentTime` every 100 ms from a page eval, and compare when each cue's text first appears with its `start`. The CC track only changes after YouTube reloads it (`setOption("captions","reload")`, which waits for a gap between captions, up to 3 s), so measure there, not from the cue list.
+
+Groq usage for a run: count the `whisper … (<n> s audio)` and `translation …, <n> tokens` lines in the console (Groq bills each transcription as at least 10 s), and read `rateLimiter` from `chrome.storage.session` for the remaining budgets Groq reported.
+
+## 7. Evidence and cleanup
 
 - `agent-browser --session $S screenshot <scratchpad>/<name>.png` for the YouTube page and the popup.
 - `agent-browser --session $S close` when done.

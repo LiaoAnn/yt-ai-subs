@@ -76,7 +76,13 @@ async function handle(
         signal,
         changed,
       );
-      return { ok: true, cues: result.cues, language: result.language, ...result.stats };
+      return {
+        ok: true,
+        cues: result.cues,
+        language: result.language,
+        ...result.stats,
+        ...(settings.debugCapture ? { raw: result.raw } : {}),
+      };
     }
     const result = await translate(
       limiter,

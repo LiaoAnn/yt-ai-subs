@@ -39,6 +39,11 @@ export interface Settings {
   translationModel: TranslationModel;
   /** Show the original line above the translation. */
   showOriginal: boolean;
+  /**
+   * Development only, not in the popup: keep each chunk's raw Whisper response, loudness
+   * envelope and cues in chrome.storage.local (`debug:*`) for offline evaluation.
+   */
+  debugCapture: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -50,6 +55,7 @@ export const DEFAULT_SETTINGS: Settings = {
   targetLanguage: "zh-TW",
   translationModel: "openai/gpt-oss-120b",
   showOriginal: true,
+  debugCapture: false,
 };
 
 export const SETTINGS_STORAGE_KEY = "settings";

@@ -90,6 +90,7 @@ export interface TranscribeResult {
   cues: Cue[];
   language: string;
   stats: CallStats;
+  raw: WhisperVerboseJson;
 }
 
 export async function transcribe(
@@ -105,6 +106,7 @@ export async function transcribe(
     requests: 1,
     audioSeconds: Math.max(MIN_BILLED_AUDIO_SECONDS, durationSeconds),
   };
+  const prompt = context.slice(-WHISPER_PROMPT_CHARS);
   const { response, stats } = await limitedFetch(
     limiter,
     "whisper",
@@ -118,7 +120,7 @@ export async function transcribe(
       form.append("timestamp_granularities[]", "word");
       form.append("temperature", "0");
       if (settings.sourceLanguage !== "auto") form.append("language", settings.sourceLanguage);
-      if (context) form.append("prompt", context.slice(-WHISPER_PROMPT_CHARS));
+      if (prompt) form.append("prompt", prompt);
       return {
         url: TRANSCRIBE_URL,
         init: {
@@ -133,7 +135,7 @@ export async function transcribe(
   );
   if (!response.ok) throw await errorFrom(response, "語音辨識失敗");
   const json = (await response.json()) as WhisperVerboseJson;
-  return { cues: whisperToCues(json), language: json.language ?? "", stats };
+  return { cues: whisperToCues(json, prompt), language: json.language ?? "", stats, raw: json };
 }
 
 export interface TranslateResult {

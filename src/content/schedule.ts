@@ -1,7 +1,9 @@
 // Which stretch of audio to transcribe next. Pure logic over the current jobs.
 //
-// Chunks follow a fixed grid of `chunkSeconds`, except right after a start or seek: the
-// chunk under the playhead is cut short (`firstChunkSeconds`) so captions appear fast.
+// Chunks are about `chunkSeconds` long, except right after a start or seek: the chunk
+// under the playhead is cut short (`firstChunkSeconds`) so captions appear fast. A chunk's
+// end is only a target: the content script moves it to a quiet moment nearby once the
+// audio is decoded (see findQuietCut), and nothing after it is scheduled until then.
 
 import type { Cue } from "@/shared/captions";
 
@@ -14,13 +16,15 @@ export interface Job {
   tries: number;
   /** For errored jobs: not before this time (ms since epoch). */
   retryAt: number;
+  /** The end is still a target that may move; schedule nothing after it yet. */
+  flexible?: boolean;
 }
 
 export interface ScheduleOptions {
   chunkSeconds: number;
   lookaheadSeconds: number;
   firstChunkSeconds: number;
-  /** Leftovers shorter than this are merged into the next grid chunk. */
+  /** A chunk never leaves less than this before the video end. */
   minChunkSeconds: number;
   maxTries: number;
 }
@@ -45,7 +49,8 @@ export function isFinished(jobs: Iterable<Job>, t: number): boolean {
   return false;
 }
 
-export type NextChunk = { start: number; end: number; retry?: Job };
+/** `flexible`: the end may move to a nearby quiet moment (not pinned by a job or the end). */
+export type NextChunk = { start: number; end: number; flexible: boolean; retry?: Job };
 
 /**
  * The next chunk to send for playhead `t`, or null if everything up to the lookahead is
@@ -72,13 +77,19 @@ export function nextNeeded(
       (job) => live(job) && job.start <= cursor + EPS && job.end > cursor + EPS,
     );
     if (covering) {
+      if (covering.flexible) return null; // its end is not known yet
       cursor = covering.end;
       continue;
     }
-    const gridEnd = (Math.floor(cursor / C + 1e-6) + 1) * C;
-    let end = Math.min(gridEnd, duration);
-    if (end - cursor < minChunkSeconds) end = Math.min(gridEnd + C, duration);
-    for (const job of jobs) if (live(job) && job.start > cursor && job.start < end) end = job.start;
+    let end = Math.min(cursor + C, duration);
+    if (duration - end < minChunkSeconds) end = duration;
+    let flexible = end < duration;
+    for (const job of jobs) {
+      if (live(job) && job.start > cursor && job.start < end) {
+        end = job.start;
+        flexible = false;
+      }
+    }
     let start = cursor;
     if (Math.abs(cursor - t) < 0.01) {
       // The playhead itself is uncovered: start a second early, without overlapping a
@@ -87,7 +98,10 @@ export function nextNeeded(
       for (const job of jobs) {
         if (live(job) && job.end <= t + EPS && job.end > start) start = job.end;
       }
-      if (end - start > firstChunkSeconds + 5) end = start + firstChunkSeconds;
+      if (end - start > firstChunkSeconds + 5) {
+        end = start + firstChunkSeconds;
+        flexible = true;
+      }
     }
     const errored = jobs.find(
       (job) => job.status === "error" && job.start <= start + EPS && job.end > start + EPS,
@@ -97,9 +111,9 @@ export function nextNeeded(
         cursor = Math.max(errored.end, cursor + 0.5);
         continue;
       }
-      return { start: errored.start, end: errored.end, retry: errored };
+      return { start: errored.start, end: errored.end, flexible: false, retry: errored };
     }
-    return { start, end };
+    return { start, end, flexible };
   }
   return null;
 }

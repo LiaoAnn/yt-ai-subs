@@ -42,15 +42,16 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 /**
- * Renders [start, end] from the store's buffered audio into WAV. Returns null if nothing
- * is buffered there yet; throws if the audio could not be decoded.
+ * Renders [start, end] from the store's buffered audio as 16 kHz mono samples (silence
+ * where nothing is buffered). Returns null if nothing is buffered there yet; throws if the
+ * audio could not be decoded.
  */
-export async function buildWav(
+export async function renderAudio(
   store: AudioStore,
   start: number,
   end: number,
   signal: AbortSignal,
-): Promise<{ wav: Uint8Array<ArrayBuffer>; duration: number } | null> {
+): Promise<{ duration: number; samples: Float32Array } | null> {
   const { runs, initKey } = store.coverage(start, end);
   const init = initKey === undefined ? undefined : store.inits.get(initKey);
   if (!runs.length || !init) return null;
@@ -83,5 +84,5 @@ export async function buildWav(
   if (placed < 0.5) throw new Error("音訊解碼失敗");
   const rendered = await context.startRendering();
   signal.throwIfAborted();
-  return { wav: encodeWav(rendered.getChannelData(0), WAV_SAMPLE_RATE), duration };
+  return { duration, samples: rendered.getChannelData(0) };
 }

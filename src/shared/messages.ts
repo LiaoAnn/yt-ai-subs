@@ -198,7 +198,13 @@ export interface CallTimings {
 }
 
 export type TranscribeReply =
-  | ({ ok: true; cues: Cue[]; language: string } & CallTimings)
+  | ({
+      ok: true;
+      cues: Cue[];
+      language: string;
+      /** The raw verbose_json response, only with the debugCapture setting. */
+      raw?: unknown;
+    } & CallTimings)
   | FailedReply;
 
 export type TranslateReply =

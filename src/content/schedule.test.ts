@@ -12,44 +12,66 @@ const NOW = 1_000_000;
 
 describe("nextNeeded", () => {
   it("starts with a short chunk a second before the playhead", () => {
-    expect(nextNeeded([], 0, 600, NOW)).toEqual({ start: 0, end: 10 });
-    expect(nextNeeded([], 45.6, 600, NOW)).toEqual({ start: 44, end: 54 });
+    expect(nextNeeded([], 0, 600, NOW)).toEqual({ start: 0, end: 10, flexible: true });
+    expect(nextNeeded([], 45.6, 600, NOW)).toEqual({ start: 44, end: 54, flexible: true });
   });
 
-  it("continues on the 30 s grid after the first chunk", () => {
-    expect(nextNeeded([done(0, 10)], 2, 600, NOW)).toEqual({ start: 10, end: 30 });
-    expect(nextNeeded([done(0, 10), done(10, 30)], 2, 600, NOW)).toEqual({ start: 30, end: 60 });
-  });
-
-  it("stops at the lookahead", () => {
-    expect(nextNeeded([done(0, 10), done(10, 30), done(30, 60)], 2, 600, NOW)).toEqual({
-      start: 60,
-      end: 90,
+  it("continues with chunks of chunkSeconds from wherever the last one ended", () => {
+    expect(nextNeeded([done(0, 10)], 2, 600, NOW)).toEqual({ start: 10, end: 40, flexible: true });
+    expect(nextNeeded([done(0, 10), done(10, 37.3)], 2, 600, NOW)).toEqual({
+      start: 37.3,
+      end: 67.3,
+      flexible: true,
     });
+  });
+
+  it("waits while the chunk before has no final end", () => {
     expect(
-      nextNeeded([done(0, 10), done(10, 30), done(30, 60), done(60, 90)], 2, 600, NOW),
+      nextNeeded([{ ...done(0, 10), status: "running", flexible: true }], 2, 600, NOW),
     ).toBeNull();
   });
 
-  it("merges tiny leftovers into the next grid chunk and stops at the video end", () => {
-    expect(nextNeeded([done(0, 25)], 2, 600, NOW)).toEqual({ start: 25, end: 60 });
-    expect(nextNeeded([done(0, 10)], 2, 20, NOW)).toEqual({ start: 10, end: 20 });
+  it("stops at the lookahead", () => {
+    expect(nextNeeded([done(0, 10), done(10, 40)], 2, 600, NOW)).toEqual({
+      start: 40,
+      end: 70,
+      flexible: true,
+    });
+    expect(nextNeeded([done(0, 10), done(10, 40), done(40, 70)], 2, 600, NOW)).toBeNull();
+  });
+
+  it("never leaves a tiny chunk before the video end", () => {
+    expect(nextNeeded([done(0, 10)], 2, 45, NOW)).toEqual({ start: 10, end: 45, flexible: false });
+    expect(nextNeeded([done(0, 10)], 2, 20, NOW)).toEqual({ start: 10, end: 20, flexible: false });
   });
 
   it("does not overlap a later job", () => {
-    expect(nextNeeded([done(0, 10), done(20, 30)], 2, 600, NOW)).toEqual({ start: 10, end: 20 });
+    expect(nextNeeded([done(0, 10), done(20, 30)], 2, 600, NOW)).toEqual({
+      start: 10,
+      end: 20,
+      flexible: false,
+    });
   });
 
   it("does not overlap a finished job before the playhead after a seek", () => {
-    expect(nextNeeded([done(0, 30)], 30.5, 600, NOW)).toEqual({ start: 30, end: 40 });
+    expect(nextNeeded([done(0, 30)], 30.5, 600, NOW)).toEqual({
+      start: 30,
+      end: 40,
+      flexible: true,
+    });
   });
 
   it("re-checks a skipped range (no audio, not a failed try) after its recheck time", () => {
-    const skipped: Job = { start: 10, end: 30, status: "error", tries: 0, retryAt: NOW + 5000 };
-    expect(nextNeeded([done(0, 10), skipped], 2, 600, NOW)).toEqual({ start: 30, end: 60 });
+    const skipped: Job = { start: 10, end: 40, status: "error", tries: 0, retryAt: NOW + 5000 };
+    expect(nextNeeded([done(0, 10), skipped], 2, 600, NOW)).toEqual({
+      start: 40,
+      end: 70,
+      flexible: true,
+    });
     expect(nextNeeded([done(0, 10), skipped], 2, 600, NOW + 5000)).toEqual({
       start: 10,
-      end: 30,
+      end: 40,
+      flexible: false,
       retry: skipped,
     });
   });
@@ -57,8 +79,13 @@ describe("nextNeeded", () => {
   it("retries errored jobs after their backoff, at most maxTries times", () => {
     const failed: Job = { start: 0, end: 10, status: "error", tries: 1, retryAt: NOW + 5000 };
     // Still backing off: the scheduler moves on to the next chunk.
-    expect(nextNeeded([failed], 0, 600, NOW)).toEqual({ start: 10, end: 30 });
-    expect(nextNeeded([failed], 0, 600, NOW + 6000)).toEqual({ start: 0, end: 10, retry: failed });
+    expect(nextNeeded([failed], 0, 600, NOW)).toEqual({ start: 10, end: 40, flexible: true });
+    expect(nextNeeded([failed], 0, 600, NOW + 6000)).toEqual({
+      start: 0,
+      end: 10,
+      flexible: false,
+      retry: failed,
+    });
     const givenUp: Job = { ...failed, tries: 3, retryAt: 0 };
     expect(nextNeeded([givenUp], 0, 600, NOW)?.retry).toBeUndefined();
   });

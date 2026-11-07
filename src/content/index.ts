@@ -22,6 +22,8 @@ import { videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
+import { saveDebugCapture } from "./debug-capture";
+import { energyEnvelope, findQuietCut, isNearFloor } from "./energy";
 import { Overlay } from "./overlay";
 import {
   DEFAULT_SCHEDULE,
@@ -31,7 +33,7 @@ import {
   trimCutSentence,
   type Job,
 } from "./schedule";
-import { buildWav, bytesToBase64 } from "./wav";
+import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
 
@@ -45,6 +47,9 @@ const CONTEXT_LINES = 4;
 const TICK_MS = 1000;
 const RENDER_MS = 150;
 const DEBUG_LOG_MS = 10_000;
+/** A flexible chunk end moves to the quietest moment up to this far earlier or later. */
+const CUT_EARLIER_SECONDS = 6;
+const CUT_LATER_SECONDS = 4;
 
 interface JobRecord extends Job {
   id: number;
@@ -237,13 +242,41 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
   job.controller = controller;
   job.status = "running";
   const [asrId, trId] = requestIds(target, job);
-  const label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s`;
+  let label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s`;
   try {
-    const audio = await buildWav(target.store, job.start, job.end, signal);
-    if (!audio) {
+    // A flexible end is a target: render a little past it (as far as audio is buffered)
+    // and cut at the quietest moment nearby, so no word is split between two chunks.
+    const targetLength = job.end - job.start;
+    let renderEnd = job.end;
+    if (job.flexible) {
+      const later = Math.min(CUT_LATER_SECONDS, targetLength * 0.2);
+      const head = target.store
+        .coverage(job.start, job.end + later)
+        .runs.find((run) => run.start <= job.start + 0.3);
+      renderEnd = Math.max(job.end, Math.min(job.end + later, (head?.end ?? 0) - 0.05));
+    }
+    const rendered = await renderAudio(target.store, job.start, renderEnd, signal);
+    if (!rendered) {
       target.jobs.delete(job.id); // not buffered yet; schedule again later
       return;
     }
+    let duration = rendered.duration;
+    let cutDb: number | null = null;
+    let cutInPause = false;
+    if (job.flexible) {
+      const envelope = energyEnvelope(rendered.samples, WAV_SAMPLE_RATE);
+      const earlier = Math.min(CUT_EARLIER_SECONDS, targetLength * 0.3);
+      const cut = findQuietCut(envelope, targetLength, targetLength - earlier, duration);
+      duration = Math.round(cut.time * 100) / 100;
+      cutDb = cut.db;
+      cutInPause = isNearFloor(envelope, cut.db);
+      job.end = Math.round((job.start + duration) * 100) / 100;
+      job.flexible = false;
+      label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s`;
+      tick(); // the next chunk can be scheduled now
+    }
+    const samples = rendered.samples.subarray(0, Math.round(duration * WAV_SAMPLE_RATE));
+    const audio = { wav: encodeWav(samples, WAV_SAMPLE_RATE), duration, samples };
     const previous = target.cues
       .filter((cue) => cue.end <= job.start + 0.5 && cue.end > job.start - CONTEXT_SECONDS)
       .slice(-CONTEXT_LINES);
@@ -261,17 +294,26 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     if (!asr.ok) throw new Error(asr.error);
     console.log(
       LOG_PREFIX,
-      `whisper ${label} (${audio.duration.toFixed(1)} s audio): ${asr.latencyMs} ms` +
+      `whisper ${label} (${audio.duration.toFixed(1)} s audio` +
+        (cutDb === null ? "" : `, cut at ${cutDb} dB${cutInPause ? " (pause)" : ""}`) +
+        `): ${asr.latencyMs} ms` +
         (asr.waitedMs ? `, waited ${asr.waitedMs} ms for the rate limit` : "") +
         `, ${asr.cues.length} lines`,
     );
 
-    const atVideoEnd = job.end >= videoDuration - 0.5;
+    // Near the end, a trim would only leave a tiny last request.
+    const atVideoEnd = job.end >= videoDuration - DEFAULT_SCHEDULE.minChunkSeconds;
     const nextClaimed = [...target.jobs.values()].some(
       (other) => other !== job && other.status !== "error" && Math.abs(other.start - job.end) < 0.3,
     );
     let relative = asr.cues;
-    const trimmed = trimCutSentence(relative, audio.duration, !atVideoEnd && !nextClaimed);
+    // A cut in a real pause split no sentence: dropping the last line would only make the
+    // next request send it again.
+    const trimmed = trimCutSentence(
+      relative,
+      audio.duration,
+      !atVideoEnd && !nextClaimed && !cutInPause,
+    );
     if (trimmed) {
       relative = trimmed.cues;
       job.end = Math.round((job.start + trimmed.newLength) * 100) / 100;
@@ -318,6 +360,18 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     }
     job.status = "done";
     persist(target);
+    if (settings.debugCapture) {
+      saveDebugCapture(settings, {
+        videoId: target.videoId,
+        start: job.start,
+        end: job.end,
+        sentSeconds: audio.duration,
+        context: asrRequest.context,
+        raw: asr.raw ?? null,
+        envelope: energyEnvelope(audio.samples, WAV_SAMPLE_RATE),
+        cues: fresh,
+      });
+    }
   } catch (error) {
     if (signal.aborted || state !== target) return;
     job.status = "error";
@@ -327,6 +381,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     console.warn(LOG_PREFIX, `chunk ${label} failed:`, target.lastError);
   } finally {
     job.controller = null;
+    job.flexible = false;
     if (signal.aborted && job.status === "running") target.jobs.delete(job.id);
   }
 }
@@ -367,6 +422,7 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
           status: "running",
           tries: 0,
           retryAt: 0,
+          flexible: next.flexible,
           controller: null,
           untranslated: false,
         };
@@ -374,7 +430,12 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
     if (readiness === "never") {
       // The buffer jumped past this part (e.g. a seek): don't block on it, but look again
       // later, since seeking back makes YouTube buffer it after all. Not a failed try.
-      target.jobs.set(job.id, { ...job, status: "error", retryAt: Date.now() + SKIP_RECHECK_MS });
+      target.jobs.set(job.id, {
+        ...job,
+        status: "error",
+        flexible: false,
+        retryAt: Date.now() + SKIP_RECHECK_MS,
+      });
       diag.reason = `跳過 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒（沒有音訊）`;
       continue;
     }
@@ -384,7 +445,9 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
         .coverage(job.start, job.end)
         .runs.find((run) => run.start <= job.start + 0.3);
       const have = head ? Math.min(head.end, job.end) - job.start : 0;
-      if (job.start - t < 12 && have >= 5) {
+      // Short requests cost as much as 10 s ones: only when the playhead is close.
+      const margin = job.start - t;
+      if ((margin < 6 && have >= 8) || (margin < 2 && have >= 3)) {
         job.end = Math.round((job.start + have - 0.1) * 100) / 100;
       } else {
         diag.reason = `音訊還沒涵蓋 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒`;
