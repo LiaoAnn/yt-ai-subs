@@ -21,6 +21,11 @@ export function trackText(settings: Settings): TrackText {
   return settings.showOriginal ? "both" : "translation";
 }
 
+/** What decides the track's events; when it is unchanged, nothing needs sending. */
+function syncKey(videoId: string, version: number, settings: Settings): string {
+  return `${videoId}\n${version}\n${settings.enabled ? trackText(settings) : "off"}`;
+}
+
 export class CaptionTrackBridge {
   private lastSent = "";
   private verdict: CaptionModeMessage | null = null;
@@ -39,12 +44,16 @@ export class CaptionTrackBridge {
     }
   }
 
-  /** Sends the video's cues to the page script when they changed. */
-  sync(videoId: string, cues: readonly Cue[], settings: Settings): void {
-    const events = settings.enabled ? toJson3(cues, trackText(settings)).events : [];
-    const key = JSON.stringify([videoId, events]);
+  /**
+   * Sends the video's cues to the page script when they changed: when `version` (bumped by
+   * the caller on every change to the cues) or a setting that shapes the text differs from
+   * the last call. Cheap when nothing changed, however long the video.
+   */
+  sync(videoId: string, version: number, cues: readonly Cue[], settings: Settings): void {
+    const key = syncKey(videoId, version, settings);
     if (key === this.lastSent) return;
     this.lastSent = key;
+    const events = settings.enabled ? toJson3(cues, trackText(settings)).events : [];
     const command: TrackCuesCommand = {
       [PAGE_COMMAND_TAG]: true,
       type: "track-cues",

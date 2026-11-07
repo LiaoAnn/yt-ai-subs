@@ -104,8 +104,16 @@ interface VideoState {
   cacheKey: string | null;
   cacheLoaded: boolean;
   jobs: Map<number, JobRecord>;
+  /** Change cues only through setCues (or bump cuesVersion), so the CC track notices. */
   cues: Cue[];
+  /** Bumped on every change to `cues` or their text; the CC track resends on a change. */
+  cuesVersion: number;
   lastError: string;
+}
+
+function setCues(target: VideoState, cues: Cue[]) {
+  target.cues = cues;
+  target.cuesVersion++;
 }
 
 let settings: Settings = DEFAULT_SETTINGS;
@@ -163,6 +171,7 @@ function newVideoState(videoId: string): VideoState {
     cacheLoaded: false,
     jobs: new Map(),
     cues: [],
+    cuesVersion: 0,
     lastError: "",
   };
 }
@@ -236,7 +245,7 @@ function syncCacheKey(target: VideoState) {
   target.cacheKey = key;
   target.cacheLoaded = false;
   target.jobs.clear();
-  target.cues = [];
+  setCues(target, []);
   target.lastError = "";
   overlay.clear();
   loadCache(key).then(
@@ -257,7 +266,10 @@ function syncCacheKey(target: VideoState) {
           });
         }
         target.cues.push(...entry.cues);
-        target.cues = target.cues.toSorted((a, b) => a.start - b.start);
+        setCues(
+          target,
+          target.cues.toSorted((a, b) => a.start - b.start),
+        );
         console.log(
           LOG_PREFIX,
           `cache hit: ${entry.chunks.length} chunks, ${entry.cues.length} cues`,
@@ -419,7 +431,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     }
     // Show the original right away; the translation replaces it when it arrives.
     target.cues.push(...fresh);
-    target.cues = target.cues.toSorted((a, b) => a.start - b.start);
+    setCues(
+      target,
+      target.cues.toSorted((a, b) => a.start - b.start),
+    );
     job.transcribed = true;
 
     if (settings.translate && fresh.length && translationPaused(quota)) {
@@ -436,7 +451,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         );
         if (signal.aborted || state !== target) {
           // Cancelled while waiting (seek, other video, turned off): send nothing.
-          target.cues = target.cues.filter((cue) => !fresh.includes(cue));
+          setCues(
+            target,
+            target.cues.filter((cue) => !fresh.includes(cue)),
+          );
           return;
         }
       }
@@ -451,7 +469,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       };
       const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
       if (signal.aborted || state !== target) {
-        target.cues = target.cues.filter((cue) => !fresh.includes(cue));
+        setCues(
+          target,
+          target.cues.filter((cue) => !fresh.includes(cue)),
+        );
         return;
       }
       if (tr?.ok) quota = tr.quota;
@@ -461,6 +482,7 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         fresh.forEach((cue, i) => {
           cue.translation = tr.lines[i] ?? cue.original;
         });
+        target.cuesVersion++;
         target.lastError = "";
         console.log(
           LOG_PREFIX,
@@ -620,7 +642,8 @@ function tick() {
   const target = currentState();
   const v = video();
   updateStatus(target, v);
-  if (target && settingsLoaded) captionTrack.sync(target.videoId, target.cues, settings);
+  if (target && settingsLoaded)
+    captionTrack.sync(target.videoId, target.cuesVersion, target.cues, settings);
   if (!target) {
     diag.reason = "還沒收到這支影片的音訊";
     return;
