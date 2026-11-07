@@ -1,7 +1,8 @@
 // Page script: runs in YouTube's MAIN world at document_start, before the player code.
 // Copies every audio segment YouTube appends to its MediaSource buffers (never during ads)
 // and hands it to the content script. YouTube buffers ahead of playback, so this yields
-// future audio without downloading anything extra.
+// future audio without downloading anything extra. It also serves the AI captions as a
+// track in YouTube's own caption (CC) menu (caption-hooks.ts).
 // Bundled as one classic script (IIFE): keep it free of globals and chrome.* APIs.
 import { LOG_PREFIX } from "@/shared/log";
 import {
@@ -11,6 +12,7 @@ import {
   type SegmentMessage,
 } from "@/shared/messages";
 import { videoIdFromUrl } from "@/shared/youtube";
+import { installCaptionTrack } from "./caption-hooks";
 import { newSpan, type Range } from "./ranges";
 
 const HOOKED = Symbol.for("yt-ai-subs.hooked");
@@ -129,6 +131,7 @@ const flags = window as unknown as { [HOOKED]?: true };
 if (!flags[HOOKED]) {
   flags[HOOKED] = true;
   install();
+  installCaptionTrack();
 }
 
 console.log(LOG_PREFIX, "page script loaded (MAIN world)", document.readyState);

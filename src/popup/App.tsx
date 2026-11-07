@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { DisplayModeStatus } from "./DisplayModeStatus";
 import {
   DEFAULT_SETTINGS,
   SOURCE_LANGUAGES,
@@ -65,6 +66,7 @@ export function App() {
         <CardHeader className="px-4">
           <CardTitle>YT AI Subs</CardTitle>
           <CardDescription>用語音模型產生 YouTube 字幕，可選擇翻譯。</CardDescription>
+          <DisplayModeStatus />
         </CardHeader>
         <CardContent className="px-4">
           <form onSubmit={onSave}>

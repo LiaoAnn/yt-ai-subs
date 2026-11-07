@@ -1,9 +1,11 @@
 // Messages between the extension's contexts.
 //
 // page script (MAIN world) --window.postMessage--> content script (isolated world)
+// content script --window.postMessage (PAGE_COMMAND_TAG)--> page script
 // content script --chrome.runtime.sendMessage--> background service worker
+// popup --chrome.tabs.sendMessage--> content script
 
-import type { Cue } from "./captions";
+import type { Cue, Json3Event } from "./captions";
 
 /** Tag on every window message, so the content script ignores YouTube's own messages. */
 export const PAGE_MESSAGE_TAG = "__ytAiSubs";
@@ -38,7 +40,25 @@ export interface SegmentMessage extends Tagged {
   bytes: ArrayBuffer;
 }
 
-export type PageMessage = PageReadyMessage | AudioBufferMessage | SegmentMessage;
+/** How captions are shown for a video: YouTube's own CC menu, or the fallback overlay. */
+export type DisplayMode = "pending" | "cc" | "overlay";
+
+/** The page script's verdict on the CC-menu track for the player's current video. */
+export interface CaptionModeMessage extends Tagged {
+  type: "caption-mode";
+  videoId: string | null;
+  mode: DisplayMode;
+  /** Why the overlay is used; empty otherwise. */
+  reason: string;
+}
+
+export type PageMessage =
+  | PageReadyMessage
+  | AudioBufferMessage
+  | SegmentMessage
+  | CaptionModeMessage;
+
+const DISPLAY_MODES: readonly unknown[] = ["pending", "cc", "overlay"] satisfies DisplayMode[];
 
 const isNumberOrNull = (value: unknown) =>
   value === null || (typeof value === "number" && Number.isFinite(value));
@@ -66,9 +86,57 @@ export function isPageMessage(data: unknown): data is PageMessage {
         isNumberOrNull(message.end) &&
         message.bytes instanceof ArrayBuffer
       );
+    case "caption-mode":
+      return (
+        (message.videoId === null || typeof message.videoId === "string") &&
+        DISPLAY_MODES.includes(message.mode) &&
+        typeof message.reason === "string"
+      );
     default:
       return false;
   }
+}
+
+/** Tag on window messages from the content script to the page script. */
+export const PAGE_COMMAND_TAG = "__ytAiSubsToPage";
+
+/** The caption track's events for a video (replaces what was sent before). */
+export interface TrackCuesCommand {
+  [PAGE_COMMAND_TAG]: true;
+  type: "track-cues";
+  videoId: string;
+  events: Json3Event[];
+}
+
+export type PageCommand = TrackCuesCommand;
+
+const isJson3Event = (value: unknown): value is Json3Event => {
+  if (typeof value !== "object" || value === null) return false;
+  const event = value as Record<string, unknown>;
+  return (
+    Number.isFinite(event.tStartMs) &&
+    Number.isFinite(event.dDurationMs) &&
+    Array.isArray(event.segs) &&
+    event.segs.every(
+      (seg: unknown) =>
+        typeof seg === "object" &&
+        seg !== null &&
+        typeof (seg as Record<string, unknown>).utf8 === "string",
+    )
+  );
+};
+
+/** Checks the shape of a content → page command (any page script can forge one). */
+export function isPageCommand(data: unknown): data is PageCommand {
+  if (typeof data !== "object" || data === null) return false;
+  const message = data as Record<string, unknown>;
+  return (
+    message[PAGE_COMMAND_TAG] === true &&
+    message.type === "track-cues" &&
+    typeof message.videoId === "string" &&
+    Array.isArray(message.events) &&
+    message.events.every(isJson3Event)
+  );
 }
 
 export interface PingMessage {
@@ -100,6 +168,17 @@ export interface CancelMessage {
 }
 
 export type RuntimeMessage = PingMessage | TranscribeMessage | TranslateMessage | CancelMessage;
+
+/** From the popup to a tab's content script. */
+export interface GetDisplayModeMessage {
+  type: "get-display-mode";
+}
+
+export interface DisplayModeReply {
+  videoId: string | null;
+  mode: DisplayMode;
+  reason: string;
+}
 
 export interface PongReply {
   type: "pong";

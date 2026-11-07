@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { newSpan } from "@/page/ranges";
 import { toJson3 } from "./captions";
-import { PAGE_MESSAGE_TAG, isPageMessage } from "./messages";
+import { PAGE_COMMAND_TAG, PAGE_MESSAGE_TAG, isPageCommand, isPageMessage } from "./messages";
+import { DEFAULT_SETTINGS } from "./settings";
+import { DEFAULT_TRACK_CONFIG, parseTrackConfig, trackConfigFromSettings } from "./track-config";
 import { videoIdFromUrl } from "./youtube";
 
 describe("toJson3", () => {
@@ -23,6 +25,48 @@ describe("toJson3", () => {
       "二番目",
     ]);
   });
+
+  it("puts the original above the translation in a bilingual track", () => {
+    const cues = [
+      { start: 0, end: 1, original: "原文", translation: "翻譯" },
+      { start: 1, end: 2, original: "same", translation: "same" },
+      { start: 2, end: 3, original: "まだ" },
+    ];
+    expect(toJson3(cues, "both").events.map((e) => e.segs[0]!.utf8)).toEqual([
+      "原文\n翻譯",
+      "same",
+      "まだ",
+    ]);
+  });
+});
+
+describe("track config", () => {
+  it("names the track after what it shows", () => {
+    expect(trackConfigFromSettings(DEFAULT_SETTINGS)).toEqual({
+      enabled: true,
+      label: "AI 繁中",
+      languageCode: "zh-TW",
+    });
+    expect(trackConfigFromSettings({ ...DEFAULT_SETTINGS, translate: false })).toEqual({
+      enabled: true,
+      label: "AI 原文",
+      languageCode: "ja",
+    });
+    expect(
+      trackConfigFromSettings({ ...DEFAULT_SETTINGS, translate: false, sourceLanguage: "auto" })
+        .languageCode,
+    ).toBe("und");
+  });
+
+  it("round-trips through localStorage text and survives garbage", () => {
+    const config = { enabled: false, label: "AI 英文", languageCode: "en" };
+    expect(parseTrackConfig(JSON.stringify(config))).toEqual(config);
+    expect(parseTrackConfig(null)).toEqual(DEFAULT_TRACK_CONFIG);
+    expect(parseTrackConfig("{oops")).toEqual(DEFAULT_TRACK_CONFIG);
+    expect(parseTrackConfig(JSON.stringify({ enabled: "yes", languageCode: "<b>" }))).toEqual(
+      DEFAULT_TRACK_CONFIG,
+    );
+  });
 });
 
 describe("isPageMessage", () => {
@@ -42,6 +86,15 @@ describe("isPageMessage", () => {
     expect(isPageMessage({ [PAGE_MESSAGE_TAG]: true, type: "page-ready" })).toBe(true);
     expect(isPageMessage(segment)).toBe(true);
     expect(isPageMessage({ ...segment, start: null, end: null, videoId: null })).toBe(true);
+    expect(
+      isPageMessage({
+        [PAGE_MESSAGE_TAG]: true,
+        type: "caption-mode",
+        videoId: "abc",
+        mode: "overlay",
+        reason: "x",
+      }),
+    ).toBe(true);
   });
 
   it("rejects untagged or malformed messages", () => {
@@ -50,7 +103,30 @@ describe("isPageMessage", () => {
     expect(isPageMessage({ ...segment, bufferId: 1.5 })).toBe(false);
     expect(isPageMessage({ ...segment, start: Number.NaN })).toBe(false);
     expect(isPageMessage({ [PAGE_MESSAGE_TAG]: true, type: "other" })).toBe(false);
+    expect(
+      isPageMessage({ [PAGE_MESSAGE_TAG]: true, type: "caption-mode", videoId: "a", mode: "x" }),
+    ).toBe(false);
     expect(isPageMessage(null)).toBe(false);
+  });
+});
+
+describe("isPageCommand", () => {
+  const command = {
+    [PAGE_COMMAND_TAG]: true,
+    type: "track-cues",
+    videoId: "abc",
+    events: [{ tStartMs: 0, dDurationMs: 1000, segs: [{ utf8: "字幕" }] }],
+  };
+
+  it("accepts track cues and rejects malformed ones", () => {
+    expect(isPageCommand(command)).toBe(true);
+    expect(isPageCommand({ ...command, events: [] })).toBe(true);
+    expect(isPageCommand({ ...command, [PAGE_COMMAND_TAG]: false })).toBe(false);
+    expect(isPageCommand({ ...command, events: [{ tStartMs: 0, segs: [] }] })).toBe(false);
+    expect(isPageCommand({ ...command, events: [{ ...command.events[0], segs: [{}] }] })).toBe(
+      false,
+    );
+    expect(isPageCommand({ [PAGE_MESSAGE_TAG]: true, type: "page-ready" })).toBe(false);
   });
 });
 

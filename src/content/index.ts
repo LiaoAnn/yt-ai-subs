@@ -5,6 +5,7 @@ import type { Cue } from "@/shared/captions";
 import { LOG_PREFIX } from "@/shared/log";
 import {
   isPageMessage,
+  type DisplayModeReply,
   type RuntimeMessage,
   type SegmentMessage,
   type TranscribeReply,
@@ -20,6 +21,7 @@ import {
 import { videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
+import { CaptionTrackBridge } from "./caption-track";
 import { Overlay } from "./overlay";
 import {
   DEFAULT_SCHEDULE,
@@ -67,12 +69,14 @@ let settingsLoaded = false;
 let state: VideoState | null = null;
 let nextJobId = 1;
 const overlay = new Overlay();
+const captionTrack = new CaptionTrackBridge();
 const diag = { pageReady: false, audioBuffers: 0, segments: 0, reason: "" };
 
 loadSettings().then(
   (loaded) => {
     settings = loaded;
     settingsLoaded = true;
+    captionTrack.writeConfig(settings);
   },
   (error: unknown) => console.warn(LOG_PREFIX, "could not load settings", error),
 );
@@ -81,6 +85,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !change) return;
   settings = withDefaults(change.newValue);
   settingsLoaded = true;
+  captionTrack.writeConfig(settings);
   tick();
 });
 
@@ -111,6 +116,8 @@ window.addEventListener("message", (event) => {
   if (message.type === "page-ready") {
     diag.pageReady = true;
     console.log(LOG_PREFIX, "content script got page message: page-ready");
+  } else if (message.type === "caption-mode") {
+    captionTrack.onVerdict(message);
   } else if (message.type === "audio-buffer") {
     diag.audioBuffers++;
     console.log(LOG_PREFIX, "audio SourceBuffer:", message.mime);
@@ -423,6 +430,7 @@ function tick() {
   const target = currentState();
   const v = video();
   updateStatus(target, v);
+  if (target && settingsLoaded) captionTrack.sync(target.videoId, target.cues, settings);
   if (!target) {
     diag.reason = "還沒收到這支影片的音訊";
     return;
@@ -464,7 +472,12 @@ function render() {
     overlay.clear();
     return;
   }
-  overlay.render(target.cues, v.currentTime, settings.showOriginal);
+  // Captions go to YouTube's CC menu; the overlay is only the fallback when that breaks.
+  if (captionTrack.mode(target.videoId).mode === "overlay") {
+    overlay.render(target.cues, v.currentTime, settings.showOriginal);
+  } else {
+    overlay.clear();
+  }
   if (
     waitingSince &&
     target.cues.some((cue) => cue.start <= v.currentTime && cue.end > v.currentTime)
@@ -523,6 +536,16 @@ setInterval(() => {
   debugLog();
 }, TICK_MS);
 setInterval(render, RENDER_MS);
+
+// The popup asks which display mode this tab uses.
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  if ((message as { type?: unknown } | null)?.type !== "get-display-mode") return false;
+  const reply: DisplayModeReply = settings.enabled
+    ? captionTrack.mode(videoIdFromUrl(location.href))
+    : { videoId: videoIdFromUrl(location.href), mode: "pending", reason: "" };
+  sendResponse(reply);
+  return false;
+});
 
 chrome.runtime.sendMessage({ type: "ping" } satisfies RuntimeMessage).then(
   (reply: unknown) => console.log(LOG_PREFIX, "background replied:", reply),

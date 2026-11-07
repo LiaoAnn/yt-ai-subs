@@ -17,12 +17,12 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
   - Whisper: 20 requests/min, 2,000/day, 7,200 s audio/hour, 28,800 s audio/day, 25 MB per file.
   - gpt-oss-120b / 20b: 30 requests/min, 1,000/day, 8K tokens/min, 200K tokens/day.
 - **Languages**: mainly Japanese and Korean sources, Traditional Chinese (Taiwan) target. Translation is optional: a transcribe-only mode must work on its own.
-- **Where captions appear**: in YouTube's own caption (CC) menu as a selectable track, not only as a custom overlay. An overlay is acceptable only as a fallback when the menu hook breaks.
+- **Where captions appear**: in YouTube's own caption (CC) menu as a selectable track ("AI 繁中", "AI 英文" or "AI 原文", named from the settings when the video loads), drawn by YouTube's renderer with the viewer's caption settings. The page script adds the track to every player response (`ytInitialPlayerResponse`, `/youtubei/v1/get_watch` and `/player` via `fetch`), answers the player's timedtext XHR for it with our json3, selects it once per video, and reloads it when new cues arrive. The overlay is only the fallback, used per video when a health check sees the hook break; the popup shows which mode the tab uses. How it works and how to debug it: the `debug-caption-track` skill.
 - **Audio source**: copy the audio YouTube already appends to its MediaSource buffers (hook `SourceBuffer.prototype.appendBuffer` in the page's MAIN world). Never download media from googlevideo directly.
 - **Chunking**: request roughly 30–60 s ahead of the playhead; a short first chunk after start/seek; cancel or deprioritise work that a seek made irrelevant; prefer cutting at silences over a fixed grid.
 - **Rate limiting**: every Groq request goes through one limiter in the background (`src/background/rate-limiter.ts`), with our own ceilings a little under the free tier: Whisper 18 req/min and 7,000 audio s/hour (each request billed as at least 10 s, as Groq does); gpt-oss 28 req/min and 7,500 tokens/min. It also obeys Groq's `x-ratelimit-remaining-*` / `x-ratelimit-reset-*` headers (Groq sends `requests` (per day), `tokens`, `audio-seconds`) and a 429's `retry-after`, and its log survives service worker restarts in `chrome.storage.session`.
 - **Translation requests**: `reasoning_effort: "low"`, JSON mode, lines sent and returned as a numbered object (`{"1": …, "2": …}`). A plain list let the model merge a sentence split over two lines and shift every later translation by one.
-- **Caption data**: `Cue` (`src/shared/captions.ts`, seconds, `original` + optional `translation`) converts one-to-one to YouTube timedtext json3 (`toJson3`), for the later CC-menu stage. Until then captions are an overlay.
+- **Caption data**: `Cue` (`src/shared/captions.ts`, seconds, `original` + optional `translation`) converts one-to-one to YouTube timedtext json3 (`toJson3`); the CC-menu track shows the translation, with the original on the line above when "翻譯上方顯示原文" is on.
 - **Cache**: finished chunks per video and per caption-shaping settings in `chrome.storage.local` (`cache:<video>:<whisper model>:<language>:<translation or none>`), at most 50 entries and 30 days, tracked in `cacheIndex`. Chunks whose translation failed are not cached.
 
 ## Stack
@@ -37,7 +37,7 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 
 ## Project layout
 
-- `src/page/` MAIN-world page script (hooks the audio, posts it with `window.postMessage`).
+- `src/page/` MAIN-world page script (hooks the audio, posts it with `window.postMessage`; serves the CC-menu caption track).
 - `src/content/` isolated-world content script (chunking, scheduling, captions).
 - `src/background/` service worker (speech-to-text and translation API calls).
 - `src/popup/` settings popup (React); `src/components/ui/` shadcn/ui components (add more with `pnpm dlx shadcn@<version> add <name>`, then check that imports use `@/lib/utils`).
