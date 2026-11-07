@@ -27,8 +27,14 @@ import {
   type TranslationModel,
   type WhisperModel,
 } from "@/shared/settings";
+import { trackConfigFromSettings } from "@/shared/track-config";
 
 type Status = "idle" | "saved" | "error";
+
+const trackKey = (settings: Settings) => {
+  const { label, languageCode } = trackConfigFromSettings(settings);
+  return `${label}\n${languageCode}`;
+};
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -36,11 +42,15 @@ export function App() {
   // overwrite them with defaults, and the load would overwrite the user's edits.
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
+  // The CC-menu track's name as last stored, to tell when a save renames it.
+  const [storedTrack, setStoredTrack] = useState("");
+  const [renamed, setRenamed] = useState(false);
 
   useEffect(() => {
     loadSettings().then(
       (stored) => {
         setSettings(stored);
+        setStoredTrack(trackKey(stored));
         setLoaded(true);
       },
       () => setStatus("error"),
@@ -56,7 +66,12 @@ export function App() {
     event.preventDefault();
     if (!loaded) return;
     saveSettings(settings).then(
-      () => setStatus("saved"),
+      () => {
+        setStatus("saved");
+        const key = trackKey(settings);
+        if (key !== storedTrack) setRenamed(true);
+        setStoredTrack(key);
+      },
       () => setStatus("error"),
     );
   };
@@ -200,6 +215,11 @@ export function App() {
                   {status === "error" && "讀寫設定失敗"}
                 </output>
               </div>
+              {renamed && (
+                <p className="text-xs text-muted-foreground" data-testid="track-rename-note">
+                  字幕選單（CC）裡的軌名會在下一部影片或重新整理頁面後更新；字幕內容會照新設定更新。
+                </p>
+              )}
             </fieldset>
           </form>
         </CardContent>
