@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "yt-ai-subs test ad skipper",
+  "version": "0.1.0",
+  "description": "Test only, not part of yt-ai-subs: fast-forwards and skips YouTube ads in agent-browser runs.",
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
