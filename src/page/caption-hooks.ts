@@ -25,6 +25,7 @@ import {
   activeEvents,
   isOurVssId,
   isPlayerEndpoint,
+  liveStatus,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
@@ -100,6 +101,9 @@ function readConfig() {
   }
 }
 
+/** Live streams seen in player responses (they get no track and no captions). */
+const liveVideos = new Set<string>();
+
 /** Title, channel, description and tags per video, from the player responses seen. */
 const videoInfos = new Map<string, VideoInfo>();
 
@@ -124,6 +128,10 @@ function noteVideoInfo(response: unknown) {
 function patch(response: unknown): boolean {
   noteVideoInfo(response);
   try {
+    const status = liveStatus(response);
+    // A stream that ended (watched again as a recording) is an ordinary video again.
+    if (status?.live) liveVideos.add(status.videoId);
+    else if (status) liveVideos.delete(status.videoId);
     const config = readConfig();
     // The creator's own track in our language replaces ours (creator-hooks.ts).
     if (noteResponse(response, config)) return false;
@@ -430,7 +438,8 @@ function control() {
         }),
       );
     }
-    const key = JSON.stringify([videoId, verdict.mode, verdict.reason]);
+    const live = videoId !== null && liveVideos.has(videoId);
+    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live]);
     // Repeat now and then, in case the content script missed it (it loads after us).
     if (key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
       const changed = key !== lastPosted;
@@ -447,7 +456,7 @@ function control() {
           }
         }
       }
-      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason });
+      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason, live });
       const info = videoId ? videoInfos.get(videoId) : undefined;
       if (info) postVideoInfo(info);
     }

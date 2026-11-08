@@ -37,6 +37,19 @@ export const DEFAULT_SCHEDULE: ScheduleOptions = {
   maxTries: 3,
 };
 
+/** Rates above this are treated as this (YouTube offers up to 2×; extensions can go higher). */
+export const MAX_RATE = 4;
+
+/**
+ * The schedule for playback at `rate`. The lookahead is in video seconds, but what keeps
+ * captions ahead is wall time (decoding, Groq's latency): at 2× the playhead covers twice
+ * the video per second, so the lookahead doubles. Slower than 1× keeps the 1× lookahead.
+ */
+export function forPlaybackRate(options: ScheduleOptions, rate: number): ScheduleOptions {
+  const scale = Number.isFinite(rate) && rate > 1 ? Math.min(rate, MAX_RATE) : 1;
+  return scale === 1 ? options : { ...options, lookaheadSeconds: options.lookaheadSeconds * scale };
+}
+
 const EPS = 0.05;
 
 const live = (job: Job) => job.status !== "error";
@@ -47,6 +60,20 @@ export function isFinished(jobs: Iterable<Job>, t: number): boolean {
     if (job.status === "done" && job.start <= t + EPS && job.end > t + EPS) return true;
   }
   return false;
+}
+
+/**
+ * Seconds of finished chunks ahead of playhead `t`, contiguous from `t` (0 when the
+ * playhead itself is not covered). For diagnostics: how far captions are ahead.
+ */
+export function leadSeconds(jobs: Iterable<Job>, t: number): number {
+  const done = [...jobs].filter((job) => job.status === "done");
+  let cursor = t;
+  for (;;) {
+    const covering = done.find((job) => job.start <= cursor + EPS && job.end > cursor + EPS);
+    if (!covering) return Math.max(0, cursor - t);
+    cursor = covering.end;
+  }
 }
 
 /** `flexible`: the end may move to a nearby quiet moment (not pinned by a job or the end). */
