@@ -20,26 +20,28 @@ T3CODE_WORKTREE_PATH=<path> wt-exec pnpm build
 
 ## 2. Open YouTube with the extension
 
-Use your own agent-browser session (stable per worktree):
+Use your own agent-browser session (stable per worktree), and **always load the test ad skipper (`test/ad-skip/`) next to `dist/`**: repeat `--extension` once per directory (tested with agent-browser 0.41; its `--help` also lists `AGENT_BROWSER_EXTENSIONS=<dir1>,<dir2>`, untested):
 
 ```bash
 S=$(agent-browser session id --scope worktree --prefix task)
-agent-browser --session $S --extension <path>/dist --args "--no-sandbox" open "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+agent-browser --session $S --extension <path>/dist --extension <path>/test/ad-skip --args "--no-sandbox" open "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 agent-browser --session $S wait --load load
-agent-browser --session $S console | grep yt-ai-subs
+agent-browser --session $S console | grep -E 'yt-ai-subs|ad-skip'
 ```
 
+- The ad skipper is a test-only helper, never part of the product. While `#movie_player` has `ad-showing` / `ad-interrupting` it mutes the ad `<video>`, plays it at 16×, keeps seeking to the end of what is buffered (seeking past it stalls the ad until YouTube fetches the end) and clicks any skip or overlay-close button. Afterwards it restores the main video's `playbackRate` and `muted` for an ad in the middle of a video; after a pre-roll it sets the rate to 1 and leaves `muted` alone (unmuting would pause a muted headless autoplay). Console lines: `[ad-skip] loaded` (once per page load: it is installed), then per ad `ad started at /watch?v=…`, `fast-forward ad (t …/… s, paused …, readyState …, buffered […])`, `clicked skip (<selector>)`, `ad over after <ms> ms, <n> seeks; …`, and `ad still showing after 10 s: …` when it did not work. Count ads with `console | grep -c "ad-skip] ad started"`; no `ad started` line means that page showed no ad.
+- Ads are rare in this headless setup: in runs of one page view per minute in one session, 2, 4 and 3 of 15, 15 and 8 page views showed an ad (pre-rolls, and pre-rolls of the next video YouTube autoplays after a short one). Do not open many videos quickly to find one: after a few dozen page views in ~15 minutes YouTube redirected to Google's `google.com/sorry/…` CAPTCHA page. Check `eval "location.host"` when a page looks empty, and wait (20 minutes was enough).
 - `--extension` and `--args` apply only when the session's browser starts. If the session is already running (without the extension, or with an old build), `agent-browser --session $S close` first.
 - `--no-sandbox` is required on the dev VM: Chrome dies with `No usable sandbox!` because Ubuntu's AppArmor blocks unprivileged user namespaces.
 - Add `--headed` only when someone needs to watch on the shared desktop; headless works for everything below.
 - Extensions do not run in incognito; agent-browser's default profile is fine.
 - The session's profile is temporary: `close` wipes `chrome.storage` (settings, key, cache). To load a rebuild, `close` and start again, then set the settings again. Do not call `chrome.runtime.reload()`: it leaves an extension loaded with `--extension` disabled.
-- Headless autoplay is blocked (`play()` rejects with `NotAllowedError`): set `video.muted = true` before `play()`. Muted playback still feeds MediaSource, so the hook gets the audio.
+- Headless autoplay is blocked (`play()` rejects with `NotAllowedError`): set `video.muted = true` before `play()`. Muted playback still feeds MediaSource, so the hook gets the audio. YouTube may set `muted` back to false about a second after playback starts (its own volume setting), and Chrome then pauses the video: in one run, 10 of 10 videos stopped at about 1 s after a single muted `play()`. Re-mute and `play()` again whenever the video is paused, until it keeps playing.
 - **Start the browser with a normal user agent and without the automation flag**, or YouTube stops playback after about 20–40 s ("Something went wrong. Refresh or try again later."), and at once on any seek. It takes both: `--user-agent` with a plain `Chrome/<version>` (not `HeadlessChrome`) and `--disable-blink-features=AutomationControlled` (so `navigator.webdriver` is false). Either one alone still failed (1 run each); with both, playback ran 5+ minutes and seeks worked. No account, no persistent profile needed.
 
   ```bash
   UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
-  agent-browser --session $S --extension <path>/dist --user-agent "$UA" \
+  agent-browser --session $S --extension <path>/dist --extension <path>/test/ad-skip --user-agent "$UA" \
     --args "--no-sandbox,--disable-blink-features=AutomationControlled" open "https://www.youtube.com/watch?v=<id>&t=60s"
   ```
 
