@@ -876,8 +876,11 @@ function tick() {
     diag.reason = "還沒收到這支影片的音訊";
     return;
   }
-  // Before any early return: audio piles up while nothing is sent (off, no key, ads).
-  if (v) target.store.prune(v.currentTime, (time) => isFinished(target.jobs.values(), time));
+  // Before any early return: audio piles up while nothing is sent (off, no key). Not during
+  // an ad: the <video> then plays the ad, and its time (from 0) would drop the video's audio.
+  if (v && !isAdShowing()) {
+    target.store.prune(v.currentTime, (time) => isFinished(target.jobs.values(), time));
+  }
   if (!settingsLoaded) return;
   const reason = unsupported(target.videoId);
   if (reason) {
