@@ -37,6 +37,11 @@ export interface DatasetVideo {
    * pictures): every chunk is a no-speech chunk and every line Whisper keeps is made up.
    */
   noSpeech?: boolean;
+  /**
+   * Stretches (start, end seconds) of a noSpeech video where someone does talk after all:
+   * unsure, neither speech nor no speech.
+   */
+  speechSpans?: readonly (readonly [number, number])[];
   note?: string;
 }
 
@@ -329,8 +334,10 @@ export const DATASET: readonly DatasetVideo[] = [
     videoId: "kxVk735LST8",
     language: "ko",
     category: "vlog",
-    voice: "female",
+    voice: "bgm only",
     channel: "찬 chan (Tokyo vlog, little talk)",
+    noSpeech: true,
+    note: "most likely nobody talks, the creator track is caption cards (inferred, not listened to): no automatic track; 35 of its 92 .ko lines carry typed emoticons (「방부제까지 같이 넣음^^;;」, ㅋ, ㅎ, ~~); Whisper on 240–390 s (current prompt, 6 chunks) matched none of them and gave only avg_logprob < -1 noise, a fallback loop and the known 「MBC 뉴스 김성현입니다」 and 「감사합니다」. Labelled female voice before 2026-11-08: its 17% talk recall was the old voice rule rightly skipping",
   },
   {
     videoId: "cth3M1iavGM",
@@ -347,7 +354,8 @@ export const DATASET: readonly DatasetVideo[] = [
     voice: "bgm only",
     channel: "mitsuba vlog (#142)",
     noSpeech: true,
-    note: "silent vlog: the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops)",
+    speechSpans: [[360, 480]],
+    note: "silent vlog with BGM, the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops); except from 360 s, where the husband comes home and the .ja track turns into dialogue (「ミーちゃん、ただいま～！会いたかった～！」 376.2 s)",
   },
   {
     videoId: "5Ma5inm_Dac",
@@ -356,7 +364,8 @@ export const DATASET: readonly DatasetVideo[] = [
     voice: "bgm only",
     channel: "mitsuba vlog (#85)",
     noSpeech: true,
-    note: "silent vlog: the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops)",
+    speechSpans: [[155, 445]],
+    note: "silent vlog with BGM, the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops); except 155–445 s, where the couple talks over breakfast: the .ja track turns into dialogue there (「おはよう。」 166.8 s, 「いただきます。」 258.2 s), and Whisper (current prompt, 258–438 s: 33 segments at temperature 0) follows it (「いただきます」 258.0, 「2日目のミニストローネが美味しい」 279.6 for 「2日目のミネストローネが美味しい朝。」 282.3, 「じゃあ行ってきます」 408.0 for 409.4); with the title in the old prompt, 24 of its 26 segments in 333–421 s followed the track and 2 echoed the title",
   },
   // News and documentaries
   {
