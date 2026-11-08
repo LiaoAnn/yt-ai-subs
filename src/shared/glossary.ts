@@ -45,6 +45,36 @@ export function mergeTerms(
   return added;
 }
 
+/**
+ * Makes a chunk's translations use the glossary's renderings where the translator used
+ * another one for the same term (two chunks translated at once, or a glossary entry it
+ * ignored): replaces its rendering, as it reported in `terms`, with the established one.
+ * Returns the lines and the terms whose rendering was replaced.
+ */
+export function applyGlossary(
+  translations: readonly string[],
+  terms: unknown,
+  glossary: Glossary,
+): { lines: string[]; replaced: string[] } {
+  if (typeof terms !== "object" || terms === null || Array.isArray(terms)) {
+    return { lines: [...translations], replaced: [] };
+  }
+  const established = new Map(Object.entries(glossary).map(([s, t]) => [squash(s), t]));
+  let lines = [...translations];
+  const replaced: string[] = [];
+  for (const [source, rendering] of Object.entries(terms as Record<string, unknown>)) {
+    const wanted = established.get(squash(source));
+    if (typeof rendering !== "string" || !wanted) continue;
+    const used = rendering.trim();
+    // Short renderings would match inside other words.
+    if (length(used) < MIN_TERM_CHARS || used === wanted || wanted.includes(used)) continue;
+    if (!lines.some((line) => line.includes(used))) continue;
+    lines = lines.map((line) => line.replaceAll(used, wanted));
+    replaced.push(source);
+  }
+  return { lines, replaced };
+}
+
 /** The entries whose source term occurs in `texts` (the lines and their context). */
 export function relevantTerms(
   glossary: Glossary,

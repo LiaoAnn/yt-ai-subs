@@ -2,7 +2,13 @@
 // page script copies, decides which chunk to transcribe next (a little ahead of the
 // playhead), sends it to the background, and draws the captions.
 import type { Cue } from "@/shared/captions";
-import { mergeTerms, parseGlossary, relevantTerms, type Glossary } from "@/shared/glossary";
+import {
+  applyGlossary,
+  mergeTerms,
+  parseGlossary,
+  relevantTerms,
+  type Glossary,
+} from "@/shared/glossary";
 import { LOG_PREFIX } from "@/shared/log";
 import {
   isPageMessage,
@@ -538,8 +544,13 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       else if (tr?.quotaPaused)
         quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
       if (tr?.ok) {
+        // A chunk translated alongside this one may have fixed a term's rendering first.
+        const fixed = applyGlossary(tr.lines, tr.terms, target.glossary);
+        if (fixed.replaced.length) {
+          console.log(LOG_PREFIX, `glossary applied to ${label}: ${fixed.replaced.join(", ")}`);
+        }
         fresh.forEach((cue, i) => {
-          cue.translation = tr.lines[i] ?? cue.original;
+          cue.translation = fixed.lines[i] ?? cue.original;
         });
         target.cuesVersion++;
         target.lastError = "";

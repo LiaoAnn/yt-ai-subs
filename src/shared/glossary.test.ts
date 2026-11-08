@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyGlossary,
   MAX_GLOSSARY_ENTRIES,
   mergeTerms,
   parseGlossary,
@@ -73,5 +74,25 @@ describe("parseReplyTerms", () => {
     expect(parseReplyTerms('{"1": "嗨"}')).toBeNull();
     expect(parseReplyTerms('{"terms": ["x"]}')).toBeNull();
     expect(parseReplyTerms("nope")).toBeNull();
+  });
+});
+
+describe("applyGlossary", () => {
+  it("replaces another rendering of an established term", () => {
+    // Two chunks translated at once: the other one fixed 유재석 → 劉在錫 first.
+    const glossary: Glossary = { 유재석: "劉在錫" };
+    expect(
+      applyGlossary(["柳在石哥來了", "柳在石！", "好"], { 유재석: "柳在石" }, glossary),
+    ).toEqual({ lines: ["劉在錫哥來了", "劉在錫！", "好"], replaced: ["유재석"] });
+  });
+
+  it("leaves lines alone when the rendering agrees, is short, or is not used", () => {
+    const glossary: Glossary = { 유재석: "劉在錫", 재석: "在錫", 지석진: "池石鎮" };
+    const lines = ["劉在錫來了"];
+    expect(applyGlossary(lines, { 유재석: "劉在錫" }, glossary).replaced).toEqual([]);
+    expect(applyGlossary(lines, { 재석: "在" }, glossary).replaced).toEqual([]);
+    expect(applyGlossary(lines, { 지석진: "池錫辰" }, glossary).replaced).toEqual([]);
+    expect(applyGlossary(lines, { 송강호: "宋康浩" }, glossary).replaced).toEqual([]);
+    expect(applyGlossary(lines, null, glossary)).toEqual({ lines, replaced: [] });
   });
 });
