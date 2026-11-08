@@ -71,9 +71,9 @@ Every change goes through these five steps, in order:
 
 1. **Plan** with the `plan-it` skill: approach, scope and how it will be verified.
 2. **Implement** with the `implement-plan` skill, until `pnpm check` and `pnpm build` pass.
-3. **Review** the diff with the `review-change` skill (`git diff main...HEAD` plus uncommitted changes). The review is done by Codex `gpt-6.1-sol` at medium reasoning effort, delegated from the working thread in the same worktree; it reports findings only and does not edit files. Fix what it finds; re-run the review only after large changes.
+3. **Review** the diff with the `review-change` skill (`git diff main...HEAD` plus uncommitted changes). The review is done by Codex `gpt-6.1-sol` at medium reasoning effort, delegated from the working thread in the same worktree (how: the `delegate-codex-review` skill); it reports findings only and does not edit files. Fix what it finds; re-run the review only after large changes.
 4. **Verify** in a real browser: install the built extension with agent-browser and check the effect on a YouTube page (the `test-extension-in-browser` skill; keep evidence with the `verification-evidence` skill).
-5. **Merge through a pull request**: push the branch and open a PR with `gh pr create --base main` (the body says what changed and how it was verified, and ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`). When the CI workflow (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build`) passes, merge with `gh pr merge --merge --delete-branch`; if it fails, fix and push to the same PR. Never push to `main` directly. t3 settles the thread once the PR is merged.
+5. **Merge through a pull request**: push the branch and open a PR with `gh pr create --base main` (the body says what changed and how it was verified, and ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`). When the CI workflow (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build`) passes, merge with `gh pr merge --merge --delete-branch`; if it fails, fix and push to the same PR. Never push to `main` directly. t3 settles the thread once the PR is merged. Step by step: the `ship-pr` skill. Publishing a downloadable version: the `release-extension` skill.
 
 ## Secrets
 
