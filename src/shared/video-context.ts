@@ -48,6 +48,13 @@ export function videoInfoFrom(response: unknown): VideoInfo | null {
  * tokens (estimateWhisperTokens), kept under the limit with a margin.
  */
 export const WHISPER_PROMPT_TOKENS = 200;
+/**
+ * Whisper reads at most 224 prompt tokens; the content script builds a prompt that fits
+ * (buildWhisperPrompt, up to about 600 ASCII characters). The background sends at most the
+ * last this many characters, which only caps what a message can make it send; the offline
+ * evaluation (src/qa/) replays segmentation with the same prompt.
+ */
+export const WHISPER_PROMPT_CHARS = 3 * WHISPER_PROMPT_TOKENS + 100;
 /** At most this much of the prompt goes to the video's title, channel and terms. */
 export const VIDEO_TERMS_TOKENS = 80;
 const MIN_TERM_CHARS = 2;

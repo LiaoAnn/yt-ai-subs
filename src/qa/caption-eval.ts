@@ -5,6 +5,7 @@
 
 import type { Cue } from "../shared/captions.ts";
 import { segmentDecisions, type WhisperVerboseJson } from "../background/segmentation.ts";
+import { WHISPER_PROMPT_CHARS } from "../shared/video-context.ts";
 import { overlapLength, type Interval, type Line } from "./ground-truth.ts";
 import { bigramOverlap, cer, chrF, normalizeForCer } from "./text.ts";
 import { replayCues, type CaptureLike } from "./timing-eval.ts";
@@ -41,7 +42,10 @@ export function decisionRows(captures: readonly WhisperCapture[], truth: Truth):
   const rows: DecisionRow[] = [];
   for (const c of captures) {
     if (!c.raw) continue;
-    for (const d of segmentDecisions(c.raw as WhisperVerboseJson, (c.context ?? "").slice(-200))) {
+    for (const d of segmentDecisions(
+      c.raw as WhisperVerboseJson,
+      (c.context ?? "").slice(-WHISPER_PROMPT_CHARS),
+    )) {
       const first = d.words[0];
       const last = d.words.at(-1);
       const span = {

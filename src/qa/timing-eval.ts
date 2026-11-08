@@ -5,6 +5,7 @@
 
 import type { Cue } from "../shared/captions.ts";
 import { whisperToCues, type WhisperVerboseJson } from "../background/segmentation.ts";
+import { WHISPER_PROMPT_CHARS } from "../shared/video-context.ts";
 
 export interface CaptureLike {
   videoId: string;
@@ -100,7 +101,7 @@ export function speechRuns(
 export function replayCues(capture: CaptureLike): Cue[] {
   return whisperToCues(
     (capture.raw ?? {}) as WhisperVerboseJson,
-    (capture.context ?? "").slice(-200),
+    (capture.context ?? "").slice(-WHISPER_PROMPT_CHARS),
   );
 }
 
