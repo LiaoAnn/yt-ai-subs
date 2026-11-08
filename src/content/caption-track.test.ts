@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Cue } from "@/shared/captions";
 import { DEFAULT_SETTINGS } from "@/shared/settings";
+import { DUB_REASON } from "@/shared/youtube";
 import { CaptionTrackBridge } from "./caption-track";
 
 describe("CaptionTrackBridge.sync", () => {
@@ -31,5 +32,42 @@ describe("CaptionTrackBridge.sync", () => {
     bridge.sync("other", 2, cues, { ...DEFAULT_SETTINGS, showOriginal: false, enabled: false });
     expect(postMessage).toHaveBeenCalledTimes(5);
     expect(postMessage.mock.calls[4]![0].videoId).toBe("other");
+  });
+});
+
+const verdict = (videoId: string, dubbed?: boolean) =>
+  ({ __ytAiSubs: true, type: "caption-mode", videoId, mode: "cc", reason: "", dubbed }) as const;
+
+describe("CaptionTrackBridge.isDubbed", () => {
+  it("follows the page script's last word for the video in the URL", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.isDubbed("vid")).toBe(false); // nothing heard yet
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.isDubbed("vid")).toBe(true);
+    expect(bridge.isDubbed("other")).toBe(false);
+    bridge.onVerdict(verdict("vid", false)); // switched to the original track
+    expect(bridge.isDubbed("vid")).toBe(false);
+    bridge.onVerdict(verdict("vid")); // an older page script without the field
+    expect(bridge.isDubbed("vid")).toBe(false);
+  });
+
+  it("says whether the page script spoke since a source change", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.heardSince(0)).toBe(false);
+    bridge.onVerdict(verdict("vid", true), 1000);
+    expect(bridge.heardSince(1000)).toBe(true);
+    expect(bridge.heardSince(1001)).toBe(false); // the source changed after it
+  });
+
+  it("turns captions off while the dub plays and on again for the original", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.offReason("vid", "/watch")).toBe("");
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.offReason("vid", "/watch")).toBe(DUB_REASON);
+    expect(bridge.offReason("other", "/watch")).toBe(""); // the verdict is about another video
+    bridge.onVerdict(verdict("vid", false));
+    expect(bridge.offReason("vid", "/watch")).toBe("");
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.offReason("vid", "/watch")).toBe(DUB_REASON);
   });
 });

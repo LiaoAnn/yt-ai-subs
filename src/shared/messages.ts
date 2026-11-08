@@ -57,6 +57,8 @@ export interface CaptionModeMessage extends Tagged {
   reason: string;
   /** The player response says the video is a live stream (no captions for it). */
   live?: boolean;
+  /** The player plays an AI-dubbed audio track (no captions while it does). */
+  dubbed?: boolean;
 }
 
 /** Title, channel, description and tags of a video, from a player response. */
@@ -163,7 +165,8 @@ export function isPageMessage(data: unknown): data is PageMessage {
         (message.videoId === null || typeof message.videoId === "string") &&
         DISPLAY_MODES.includes(message.mode) &&
         typeof message.reason === "string" &&
-        (message.live === undefined || typeof message.live === "boolean")
+        (message.live === undefined || typeof message.live === "boolean") &&
+        (message.dubbed === undefined || typeof message.dubbed === "boolean")
       );
     case "video-info": {
       const info = message.info as Record<string, unknown> | null;
@@ -289,7 +292,7 @@ export interface GetDisplayModeMessage {
 
 export interface DisplayModeReply {
   videoId: string | null;
-  /** "off": this kind of video gets no captions (live, Shorts); `reason` says which. */
+  /** "off": no captions for this video (live, Shorts, an AI dub playing); `reason` says why. */
   mode: DisplayMode | "off";
   reason: string;
 }

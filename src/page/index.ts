@@ -12,6 +12,7 @@ import {
   type SegmentMessage,
 } from "@/shared/messages";
 import { videoIdFromUrl } from "@/shared/youtube";
+import { playerPlaysDub } from "./audio-track";
 import { installCaptionTrack } from "./caption-hooks";
 import { MediaSourceGate, lengthSecondsOf } from "./media-source-kind";
 import { newSpan, type Range } from "./ranges";
@@ -60,6 +61,8 @@ interface SourceState {
   /** Its object URL (what the <video> element's src is set to while it is attached). */
   url: string | null;
   gate: MediaSourceGate<SegmentMessage>;
+  /** What the first append said about the audio track (logged once per MediaSource). */
+  dubbed?: boolean | null;
 }
 
 /** `lengthSeconds` per video ID, from every player response the page got. */
@@ -169,6 +172,19 @@ function install() {
     // An ad's MediaSource, or one whose segments are no longer wanted.
     if (!info || !source || !state || state.gate.kind === "ad")
       return appendBuffer.call(this, data);
+    // An AI-dubbed track: none of its audio leaves the page (audio-track.ts). Switching the
+    // track makes YouTube create a new MediaSource (8 of 8 switches on 4 videos) that starts
+    // with init segments (2 of 2 inspected), so the original's audio comes complete after a
+    // switch back.
+    const dubbed = playerPlaysDub();
+    if (state.dubbed === undefined || (dubbed === true) !== (state.dubbed === true)) {
+      state.dubbed = dubbed;
+      console.log(
+        LOG_PREFIX,
+        `audio track: ${dubbed ? "AI dub, not passed on" : dubbed === false ? "not a dub" : "unknown"}`,
+      );
+    }
+    if (dubbed === true) return appendBuffer.call(this, data);
 
     const adShowing = isAdShowing();
     let bytes: Uint8Array<ArrayBuffer> | null = null;

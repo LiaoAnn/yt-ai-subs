@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DisplayModeReply, GetDisplayModeMessage } from "@/shared/messages";
+import { DUB_REASON } from "@/shared/youtube";
 
 const WATCH_URLS = ["https://www.youtube.com/watch*"];
 
@@ -18,6 +19,7 @@ function describe(state: State): string {
   if (state.kind === "none") return "沒有開著的 YouTube 影片";
   const { mode, reason } = state.reply;
   if (!state.reply.videoId) return "這個分頁沒有在看影片";
+  if (mode === "off" && reason === DUB_REASON) return `AI 字幕暫停（${reason}）`;
   if (mode === "off") return `這支影片不產生字幕（${reason}）`;
   if (mode === "cc") return "YouTube 字幕選單（CC）";
   if (mode === "overlay") return `備用疊加字幕${reason ? `（${reason}）` : ""}`;

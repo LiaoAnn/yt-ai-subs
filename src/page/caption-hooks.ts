@@ -13,6 +13,7 @@ import {
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
+import { DubTracker, playerPlaysDub } from "./audio-track";
 import {
   creatorMessage,
   creatorTick,
@@ -378,6 +379,7 @@ function post(message: Omit<CaptionModeMessage, typeof PAGE_MESSAGE_TAG>) {
 
 function control() {
   const health = new TrackHealth();
+  const dubs = new DubTracker();
   const autoSelected = new Set<string>();
   let staleSince = 0;
   let lastPosted = "";
@@ -385,7 +387,8 @@ function control() {
   let lastDebug = 0;
   let lastReloadCall = 0;
 
-  setInterval(() => {
+  /** One control step; `force` posts the verdict even when it did not change. */
+  const step = (force = false) => {
     const player = document.getElementById("movie_player") as YtPlayer | null;
     let videoId: string | null = null;
     let inTracklist = false;
@@ -414,9 +417,13 @@ function control() {
       console.warn(LOG_PREFIX, "caption track: player API failed", error);
     }
 
+    // While an AI dub plays, leave the video to YouTube: no track selected, no creator track
+    // fetched or selected (both happen once the viewer switches to the original).
+    const dubbed = dubs.observe(videoId, adShowing, adShowing ? null : playerPlaysDub());
+
     const config = readConfig();
     const track = videoId ? trackFor(videoId) : null;
-    if (config.enabled) creatorTick(player, videoId, adShowing, CONTROL_MS);
+    if (config.enabled && !dubbed) creatorTick(player, videoId, adShowing, CONTROL_MS);
     const creatorTarget = targetFor(videoId);
 
     // Never select the track for a video that already fell back to the overlay (the track
@@ -428,6 +435,7 @@ function control() {
       ours &&
       config.enabled &&
       !adShowing &&
+      !dubbed &&
       !fellBack &&
       !autoSelected.has(videoId)
     ) {
@@ -505,9 +513,9 @@ function control() {
       );
     }
     const live = videoId !== null && liveVideos.has(videoId);
-    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live]);
+    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live, dubbed]);
     // Repeat now and then, in case the content script missed it (it loads after us).
-    if (key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
+    if (force || key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
       const changed = key !== lastPosted;
       lastPosted = key;
       lastPostedAt = Date.now();
@@ -522,11 +530,29 @@ function control() {
           }
         }
       }
-      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason, live });
+      post({
+        type: "caption-mode",
+        videoId,
+        mode: verdict.mode,
+        reason: verdict.reason,
+        live,
+        dubbed,
+      });
       const info = videoId ? videoInfos.get(videoId) : undefined;
       if (info) postVideoInfo(info);
     }
-  }, CONTROL_MS);
+  };
+  setInterval(step, CONTROL_MS);
+  // Switching the audio track swaps the <video>'s MediaSource ("emptied"), and
+  // getAudioTrack() already names the new track then: say so at once, so the content script
+  // sends no chunk in between (it holds chunks from "emptied" until this verdict).
+  document.addEventListener(
+    "emptied",
+    (event) => {
+      if (event.target === document.querySelector("#movie_player video")) step(true);
+    },
+    true,
+  );
 }
 
 export function installCaptionTrack(observePlayerResponse: (response: unknown) => void) {

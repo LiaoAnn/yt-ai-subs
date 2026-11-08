@@ -4,7 +4,7 @@ import { toJson3 } from "./captions";
 import { PAGE_COMMAND_TAG, PAGE_MESSAGE_TAG, isPageCommand, isPageMessage } from "./messages";
 import { DEFAULT_SETTINGS } from "./settings";
 import { DEFAULT_TRACK_CONFIG, parseTrackConfig, trackConfigFromSettings } from "./track-config";
-import { unsupportedReason, videoIdFromUrl } from "./youtube";
+import { DUB_REASON, unsupportedReason, videoIdFromUrl } from "./youtube";
 
 describe("toJson3", () => {
   it("maps cues to timedtext events in milliseconds", () => {
@@ -188,5 +188,11 @@ describe("unsupportedReason", () => {
     expect(unsupportedReason("/shorts/abc123", false)).toBe("Shorts 不支援");
     expect(unsupportedReason("/watch", true)).toBe("直播不支援");
     expect(unsupportedReason("/live/abc123", false)).toBe(""); // a finished stream's VOD
+  });
+
+  it("turns captions off while an AI dub plays", () => {
+    expect(unsupportedReason("/watch", false, true)).toBe(DUB_REASON);
+    expect(unsupportedReason("/watch", false, false)).toBe("");
+    expect(unsupportedReason("/watch", true, true)).toBe("直播不支援");
   });
 });

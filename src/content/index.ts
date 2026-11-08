@@ -38,7 +38,7 @@ import {
   buildWhisperPrompt,
   type VideoInfo,
 } from "@/shared/video-context";
-import { unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
+import { DUB_REASON, unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
@@ -64,7 +64,7 @@ import {
   type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
-import { schedulingPause } from "./watching";
+import { awaitingTrackVerdict, schedulingPause } from "./watching";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
@@ -291,7 +291,22 @@ const pauseReason = () =>
       document.pictureInPictureElement != null ||
       (window as { documentPictureInPicture?: { window: Window | null } }).documentPictureInPicture
         ?.window != null,
+    trackPending: awaitingTrackVerdict(
+      sourceChangedAt,
+      captionTrack.heardSince(sourceChangedAt),
+      Date.now(),
+    ),
   });
+
+/** When the player's <video> last changed its source ("emptied"; an audio-track switch). */
+let sourceChangedAt = 0;
+document.addEventListener(
+  "emptied",
+  (event) => {
+    if (event.target === video()) sourceChangedAt = Date.now();
+  },
+  true,
+);
 
 function newVideoState(videoId: string): VideoState {
   return {
@@ -342,6 +357,9 @@ window.addEventListener("message", (event) => {
     console.log(LOG_PREFIX, "content script got page message: page-ready");
   } else if (message.type === "caption-mode") {
     captionTrack.onVerdict(message);
+    // A switch to an AI dub: cancel at once (tick aborts), so no chunk decoding or waiting
+    // for the one before it is sent in the second until the next tick.
+    if (state && captionTrack.isDubbed(state.videoId)) tick();
   } else if (message.type === "video-info") {
     onVideoInfo(message.info);
   } else if (message.type === "creator-captions") {
@@ -355,15 +373,17 @@ window.addEventListener("message", (event) => {
   }
 });
 
-/** Why the current page gets no captions (live stream, Shorts), or "". */
-const unsupported = (videoId: string | null) =>
-  unsupportedReason(location.pathname, captionTrack.isLive(videoId));
+/** Why the current page gets no captions (live stream, Shorts, an AI dub playing), or "". */
+const unsupported = (videoId: string | null) => captionTrack.offReason(videoId, location.pathname);
 
 function onSegment(message: SegmentMessage) {
   diag.segments++;
   if (diag.segments === 1) console.log(LOG_PREFIX, "receiving audio");
   const videoId = message.videoId ?? videoIdFromUrl(location.href);
-  if (!videoId || unsupported(videoId)) return; // keep no audio that will never be sent
+  // Keep no audio that will never be sent. Not by the dub verdict: the page script passes on
+  // no dubbed audio, and after a switch to the original the first segments (the init
+  // segments) arrive before the verdict changes.
+  if (!videoId || unsupportedReason(location.pathname, captionTrack.isLive(videoId))) return;
   if (!state || state.videoId !== videoId) {
     if (state) abortAll(state);
     state = newVideoState(videoId);
@@ -586,7 +606,7 @@ async function runCreatorJob(target: VideoState, job: JobRecord) {
       const wait = round === 0 ? before : undefined;
       // The chunk's first request: not if an ad started or the tab was hidden meanwhile
       // (it is scheduled again later). Later rounds finish the chunk.
-      const maySend = () => round > 0 || pauseReason() === null;
+      const maySend = () => round > 0 || (pauseReason() === null && !unsupported(target.videoId));
       if (!(await translateLines(target, job, fresh, wait, label, signal, maySend))) {
         if (!signal.aborted && state === target && !maySend()) target.jobs.delete(job.id);
         return;
@@ -696,9 +716,9 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       context: buildWhisperPrompt(previous.map((cue) => cue.original).join(" ")),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
-    if (quota.whisper === "out" || pauseReason()) {
-      // The day's budget ran out, an ad started or the tab was hidden while this chunk was
-      // decoding: send nothing (it is scheduled again later).
+    if (quota.whisper === "out" || pauseReason() || unsupported(target.videoId)) {
+      // The day's budget ran out, an ad started, the tab was hidden or an AI dub started
+      // while this chunk was decoding: send nothing (it is scheduled again later).
       target.jobs.delete(job.id);
       return;
     }
@@ -968,7 +988,8 @@ function tick() {
   // say so rather than "no audio yet".
   const pause = pauseReason();
   if (!target) {
-    diag.reason = pause ?? "還沒收到這支影片的音訊";
+    // A dub from the start: the page script passes on no audio, so there is no state yet.
+    diag.reason = pause ?? (unsupported(videoIdFromUrl(location.href)) || "還沒收到這支影片的音訊");
     return;
   }
   // Before any early return: audio piles up while nothing is sent (off, no key). Not during
@@ -981,7 +1002,9 @@ function tick() {
   if (reason) {
     if (diag.reason !== reason) console.log(LOG_PREFIX, `off for this video: ${reason}`);
     abortAll(target);
-    target.store.prune(Infinity, () => true);
+    // A dub can be switched back: the stored audio is the original's (the page script never
+    // passes on a dub's), so it stays, pruned as usual.
+    if (reason !== DUB_REASON) target.store.prune(Infinity, () => true);
     diag.reason = reason;
     return;
   }
