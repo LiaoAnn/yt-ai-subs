@@ -3,12 +3,12 @@
 //
 // Loudness alone cannot tell a voice from background music, which is just as loud. Speech
 // keeps most of its energy in 300–3400 Hz and switches on and off with syllables a few
-// times a second. A frame counts as voiced when the band dominates a tonal spectrum, or when
-// the band's level rises and falls like syllables, whatever else the spectrum holds: a low
-// voice (fundamental below 300 Hz), a quiet voice over wind or room noise, talk over music.
-// This sends when in doubt: much music swings too, and the filters after Whisper
-// (src/background/segmentation.ts) drop what it makes up there. The thresholds are tuned on
-// the evaluation set (src/qa/, the test-extension-in-browser skill).
+// times a second. A frame counts as voiced when that band is tonal (not noise-like) and
+// either dominates the spectrum or rises and falls like syllables. The second rule covers a
+// low voice (fundamental below 300 Hz) and talk over music; much music swings too, so it
+// leans towards sending, and the filters after Whisper (src/background/segmentation.ts)
+// drop what Whisper makes up there. The thresholds are tuned on the evaluation set
+// (src/qa/, the test-extension-in-browser skill).
 
 export const VOICE_FRAME_SECONDS = 0.02;
 const FFT_SIZE = 512; // 32 ms at 16 kHz
@@ -110,26 +110,25 @@ export function voiceFeatures(samples: Float32Array, sampleRate: number): VoiceF
   return out;
 }
 
-/** A frame looks voiced when the speech band dominates and the spectrum is not noise-like. */
+/**
+ * A frame looks voiced when its 300–3400 Hz spectrum is not noise-like and either that band
+ * dominates, or the frame is audible and the band's level spans at least SYLLABLE_SWING_DB
+ * within SYLLABLE_SWING_FRAMES frames either side: syllables switching on and off, whatever
+ * else the spectrum holds (a low voice whose fundamental holds most of the energy, talk over
+ * music). Held music and silence do not swing.
+ */
 const VOICED_MIN_SHARE = 45;
 const VOICED_MAX_FLATNESS = 30;
-/**
- * Or when it is audible and the speech band's level spans at least SYLLABLE_SWING_DB within
- * SYLLABLE_SWING_FRAMES frames either side: syllables switching on and off, whatever the
- * spectrum (a low voice whose fundamental holds most of the energy, a quiet voice over
- * wind or room noise, talk over music). Held music and silence do not swing.
- */
 const SYLLABLE_MIN_BAND_DB = -60;
 const SYLLABLE_SWING_DB = 15;
 const SYLLABLE_SWING_FRAMES = 12;
 /** Window over which voiced frames are counted (seconds). */
 const VOICE_WINDOW_SECONDS = 3;
 /**
- * A chunk is sent only if some window has at least this share of voiced frames. Voice
- * detection sends when in doubt (the filters after Whisper catch made-up text): tuned on the
- * evaluation set (src/qa/dataset.ts) for recall, see AGENTS.md "Voice activity".
+ * A chunk is sent only if some window has at least this share of voiced frames. Tuned on the
+ * evaluation set (src/qa/dataset.ts), see AGENTS.md "Voice activity".
  */
-export const MIN_VOICED_SHARE = 0.3;
+export const MIN_VOICED_SHARE = 0.45;
 
 /** The highest share of voiced frames in any VOICE_WINDOW_SECONDS window (0–1). */
 export function bestVoicedWindow(features: VoiceFeatures): number {
@@ -145,7 +144,8 @@ export function bestVoicedWindow(features: VoiceFeatures): number {
     return max - min >= SYLLABLE_SWING_DB;
   };
   const voiced = bandShare.map((share, i) => {
-    if (share >= VOICED_MIN_SHARE && flatness[i]! <= VOICED_MAX_FLATNESS) return 1;
+    if (flatness[i]! > VOICED_MAX_FLATNESS) return 0;
+    if (share >= VOICED_MIN_SHARE) return 1;
     return band[i]! >= SYLLABLE_MIN_BAND_DB && swings(i) ? 1 : 0;
   });
   const width = Math.round(VOICE_WINDOW_SECONDS / VOICE_FRAME_SECONDS);

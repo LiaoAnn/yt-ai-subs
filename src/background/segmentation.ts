@@ -47,8 +47,9 @@ const HALLUCINATIONS: readonly RegExp[] = [
   /^(\s*[.…。]+\s*)$/,
   /시청해\s*주셔서\s*감사합니다/,
   /구독과\s*좋아요/,
-  // A news anchor's sign-off from Whisper's training data ("MBC 뉴스 김성현입니다").
-  /MBC\s*뉴스\s*\S*입니다/,
+  // A news reporter's sign-off from Whisper's training data, as a whole segment ("MBC 뉴스
+  // 김성현입니다." over a silent vlog); a real report says it too, but loses only that line.
+  /^\s*MBC\s*뉴스\s*\S{2,4}입니다[.。]?\s*$/,
   /^字幕/,
   // Only a bracketed note ("〈字幕〉", "[音楽]", "(笑)"): never speech.
   /^\s*[[(（〈《【<][^\])）〉》】>]*[\])）〉》】>]\s*$/,

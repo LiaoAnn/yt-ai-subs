@@ -23,7 +23,7 @@ function capture(
     frameSeconds: 0.02,
     envelope: Array.from({ length: n }, () => db),
     voice: {
-      band: Array.from({ length: n }, (_, i) => (voiced(t(i)) ? -30 : -70)),
+      band: Array.from({ length: n }, (_, i) => (voiced(t(i)) ? -30 : -60)),
       bandShare: Array.from({ length: n }, (_, i) => (voiced(t(i)) ? 70 : 20)),
       flatness: Array.from({ length: n }, (_, i) => (voiced(t(i)) ? 10 : 50)),
       wideShare: Array.from({ length: n }, (_, i) => (voiced(t(i)) ? 80 : 30)),
@@ -72,8 +72,8 @@ describe("simulated chunks", () => {
 
   it("scores recall, music and quiet stretches, and precision", () => {
     const score = scoreChunks(t, simulateChunks(t, 10), truth, 10);
-    // a chunk with only its first second of talk (19–29 s) is still sent (1 of 3 s voiced)
-    expect(score.talkRecall).toBe(1);
+    // a chunk with only its first second of talk (19–29 s) is skipped: 1 s of 155 lost
+    expect(score.talkRecall).toBeCloseTo(154 / 155);
     expect(score.linesEverSkipped).toBe(0);
     expect(score.lines).toBe(2);
     // no-speech chunks start at 21–70 s (0.5 s padding); those starting by 55 s are
@@ -86,11 +86,11 @@ describe("simulated chunks", () => {
   });
 
   it("counts a line as skipped when some chunk around it was skipped", () => {
-    const sparse = featureTimeline([capture(0, 40, (s) => s >= 10 && s < 10.5)]);
+    const sparse = featureTimeline([capture(0, 40, (s) => s >= 10 && s < 11.5)]);
     const score = scoreChunks(
       sparse,
       simulateChunks(sparse, 10),
-      { ...truth, lines: [{ start: 10, end: 10.5 }] },
+      { ...truth, lines: [{ start: 10, end: 11.5 }] },
       10,
     );
     expect(score.linesEverSkipped).toBe(1);

@@ -334,8 +334,10 @@ export const DATASET: readonly DatasetVideo[] = [
     videoId: "kxVk735LST8",
     language: "ko",
     category: "vlog",
-    voice: "female",
+    voice: "bgm only",
     channel: "찬 chan (Tokyo vlog, little talk)",
+    noSpeech: true,
+    note: "most likely nobody talks, the creator track is caption cards (inferred, not listened to): no automatic track; 35 of its 92 .ko lines carry typed emoticons (「방부제까지 같이 넣음^^;;」, ㅋ, ㅎ, ~~); Whisper on 240–390 s (current prompt, 6 chunks) matched none of them and gave only avg_logprob < -1 noise, a fallback loop and the known 「MBC 뉴스 김성현입니다」 and 「감사합니다」. Labelled female voice before 2026-11-08: its 17% talk recall was the old voice rule rightly skipping",
   },
   {
     videoId: "cth3M1iavGM",

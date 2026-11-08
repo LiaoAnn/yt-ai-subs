@@ -209,6 +209,7 @@ describe("whisperToCues", () => {
     expect(isHallucination("시청해 주셔서 감사합니다")).toBe(true);
     expect(isHallucination("MBC 뉴스 김성현입니다.")).toBe(true);
     expect(isHallucination("MBC 뉴스를 봤어요")).toBe(false);
+    expect(isHallucination("MBC 뉴스 김성현입니다. 오늘의 날씨입니다")).toBe(false);
     expect(isHallucination("今日はいい天気")).toBe(false);
     expect(isHallucination("〈字幕〉")).toBe(true);
     expect(isHallucination("[音楽]")).toBe(true);
