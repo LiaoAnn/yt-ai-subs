@@ -26,9 +26,15 @@ import { isOurVssId } from "./caption-track";
 
 /** Give up on the token after this much ad-free time with the video loaded. */
 const TOKEN_WAIT_MS = 12_000;
+/** Without a token yet, ask the player to reload the selected track this often. */
+const TOKEN_RETRY_MS = 3000;
 const MAX_VIDEOS = 8;
-/** Parameters that belong to a track, not to the player's request. */
-const TRACK_PARAMS = new Set(["v", "lang", "kind", "name", "tlang", "fmt", "ytaisubs"]);
+/**
+ * Parameters not copied from the player's request: they belong to a track. `variant`
+ * ("timing-optimized", which the player adds to some requests for our track) makes a
+ * creator track come back empty (0Fk2MSLtrs0, 2026-11-08: 0 bytes with it, 38,804 without).
+ */
+const TRACK_PARAMS = new Set(["v", "lang", "kind", "name", "tlang", "fmt", "ytaisubs", "variant"]);
 
 interface VideoCreator {
   target: CaptionTrackInfo | null;
@@ -217,6 +223,15 @@ export function creatorTick(
       entry.status = "failed";
       entry.result = { status: "failed", reason: "播放器沒有載入任何字幕，抓不到創作者字幕" };
       console.warn(LOG_PREFIX, `no timedtext token for ${videoId}: creator track not fetched`);
+    } else if (entry.waitedMs % TOKEN_RETRY_MS < elapsedMs) {
+      // The player's first request for a track sometimes goes out before it has a token
+      // (0Fk2MSLtrs0: none at the selection, one at every reload after). Reloading the
+      // selected track (ours is answered in the page, nothing is sent) makes it ask again.
+      try {
+        player?.setOption?.("captions", "reload", true);
+      } catch {
+        // the timeout above still applies
+      }
     }
   }
   if (entry.target && !entry.targetSelected && player?.getOption && player.setOption) {
