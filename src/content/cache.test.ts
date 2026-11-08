@@ -278,6 +278,36 @@ describe("saveCache with a full storage area", () => {
     );
     expect(entryKeys(data)).toEqual([]);
   });
+
+  it("never evicts the earlier copy of the entry being saved, even when it gives up", async () => {
+    const now = Date.now();
+    const old = bigEntry(now - 10, 20);
+    const { storage, data } = limitedStorage(JSON.stringify(old).length * 3, {
+      "cache:long:x": old,
+      [metaKeyOf("cache:long:x")]: now - 10,
+      "cache:other:x": bigEntry(now - 20, 20),
+      [metaKeyOf("cache:other:x")]: now - 20,
+    });
+    await expect(saveCache("cache:long:x", bigEntry(now, 2000), storage)).rejects.toThrow();
+    expect(data.get("cache:long:x")).toEqual(old);
+    expect(data.has(metaKeyOf("cache:long:x"))).toBe(true);
+    expect(data.has("cache:other:x")).toBe(false);
+  });
+
+  it("makes room for an entry saved by an older version without a meta key", async () => {
+    const now = Date.now();
+    const legacy = bigEntry(now - 100, 400);
+    const size = JSON.stringify(legacy).length;
+    // Full: the rebuilt meta key itself does not fit before something is evicted.
+    const { storage, data } = limitedStorage(size * 2 + 60, {
+      "cache:legacy:x": legacy,
+      "cache:old:x": bigEntry(now - 50, 400),
+      [metaKeyOf("cache:old:x")]: now - 50,
+    });
+    await saveCache("cache:new:x", bigEntry(now, 400), storage);
+    expect(entryKeys(data)).toContain("cache:new:x");
+    expect(data.has("cache:legacy:x")).toBe(false);
+  });
 });
 
 describe("isExpired", () => {

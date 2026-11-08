@@ -164,7 +164,13 @@ export async function evict(
       index[key] = typeof savedAt === "number" ? savedAt : Number.NaN;
       if (Number.isFinite(index[key])) rebuilt[metaKeyOf(key)] = index[key]!;
     }
-    if (Object.keys(rebuilt).length) await storage.set(rebuilt);
+    if (Object.keys(rebuilt).length) {
+      try {
+        await storage.set(rebuilt);
+      } catch {
+        // Storage full: evict below (judged from the entries' own savedAt) without them.
+      }
+    }
     if (keys.includes(LEGACY_INDEX_KEY)) await storage.remove(LEGACY_INDEX_KEY);
   }
 
@@ -176,7 +182,9 @@ export async function evict(
   const evicted = candidates.filter((key) => {
     const savedAt = current[metaKeyOf(key)];
     const was = index[key]!;
-    return savedAt === undefined ? !Number.isFinite(was) : savedAt === was;
+    // No meta key: a broken entry, or one whose rebuilt meta key could not be written.
+    if (savedAt === undefined) return !Number.isFinite(was) || missing.includes(key);
+    return savedAt === was;
   });
   if (evicted.length) await storage.remove(evicted.flatMap((key) => [key, metaKeyOf(key)]));
 }

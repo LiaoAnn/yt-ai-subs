@@ -145,14 +145,17 @@ describe("AudioStore", () => {
     const store = new AudioStore();
     store.append(1, bytes(initSegment()), true, null, null);
     const starts = [0, 90_000, 650_000, 700_000, 1_400_000];
+    const clusters = starts.map((ms) => bytes(audioCluster(ms, 1000)));
+    const init = bytes(initSegment()).length;
     store.append(1, bytes(...starts.map((ms) => audioCluster(ms, 1000))), false, null, null);
+    expect(store.byteLength()).toBe(init + clusters.reduce((sum, c) => sum + c.length, 0));
     // Playhead at 700 s, nothing done (extension off): only audio within 600 s stays.
     store.prune(700, () => false);
     expect([...store.clusters.values()].map((c) => c.start)).toEqual([650, 700]);
     // Done and only 50 s behind: kept, so a chunk being cut there still has it.
     store.prune(700, () => true);
     expect([...store.clusters.values()].map((c) => c.start)).toEqual([650, 700]);
-    expect(store.byteLength()).toBeGreaterThan(0);
+    expect(store.byteLength()).toBe(init + clusters[2]!.length + clusters[3]!.length);
   });
 
   it("forgets init segments of old streams once their audio is gone", () => {
@@ -165,5 +168,17 @@ describe("AudioStore", () => {
     // Buffer 1's first stream lost its only cluster; both current streams keep theirs.
     expect(store.inits.size).toBe(2);
     expect(store.clusters.size).toBe(1);
+  });
+
+  it("keeps the init segment of an old stream whose audio is still needed", () => {
+    const store = new AudioStore();
+    store.append(1, bytes(initSegment(), audioCluster(100_000, 1000)), true, null, null);
+    store.append(1, bytes(initSegment(), audioCluster(110_000, 1000)), true, null, null); // switch
+    store.prune(110, () => false);
+    // The first stream is no longer current, but its audio at 100 s can still be decoded.
+    expect(store.inits.size).toBe(2);
+    expect(store.coverage(100, 101).initKey).toBe("1:1");
+    expect(store.inits.has("1:1")).toBe(true);
+    expect(store.clusters.size).toBe(2);
   });
 });
