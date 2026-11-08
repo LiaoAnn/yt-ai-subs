@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SCHEDULE,
+  forPlaybackRate,
   isFinished,
   isIrrelevant,
   leadSeconds,
@@ -136,5 +138,30 @@ describe("leadSeconds", () => {
     expect(leadSeconds(jobs, 45)).toBe(0);
     expect(leadSeconds([done(0, 10), done(20, 30)], 2)).toBe(8);
     expect(leadSeconds([], 2)).toBe(0);
+  });
+});
+
+describe("forPlaybackRate", () => {
+  it("scales the lookahead with faster playback, capped, and never shrinks it", () => {
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 1)).toBe(DEFAULT_SCHEDULE);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 0.5)).toBe(DEFAULT_SCHEDULE);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, Number.NaN)).toBe(DEFAULT_SCHEDULE);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 1.5).lookaheadSeconds).toBe(90);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 2).lookaheadSeconds).toBe(120);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 16).lookaheadSeconds).toBe(240);
+    expect(forPlaybackRate(DEFAULT_SCHEDULE, 2).chunkSeconds).toBe(DEFAULT_SCHEDULE.chunkSeconds);
+  });
+
+  it("schedules further ahead and keeps running jobs relevant at 2x", () => {
+    const jobs = [done(0, 10), done(10, 40), done(40, 70)];
+    expect(nextNeeded(jobs, 5, 600, NOW)).toBeNull(); // 1x: 65 s ahead is enough
+    expect(nextNeeded(jobs, 5, 600, NOW, forPlaybackRate(DEFAULT_SCHEDULE, 2))).toEqual({
+      start: 70,
+      end: 100,
+      flexible: true,
+    });
+    const far = { start: 100, end: 130 };
+    expect(isIrrelevant(far, 5)).toBe(true);
+    expect(isIrrelevant(far, 5, forPlaybackRate(DEFAULT_SCHEDULE, 2))).toBe(false);
   });
 });

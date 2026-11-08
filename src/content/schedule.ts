@@ -37,6 +37,19 @@ export const DEFAULT_SCHEDULE: ScheduleOptions = {
   maxTries: 3,
 };
 
+/** Rates above this are treated as this (YouTube offers up to 2×; extensions can go higher). */
+export const MAX_RATE = 4;
+
+/**
+ * The schedule for playback at `rate`. The lookahead is in video seconds, but what keeps
+ * captions ahead is wall time (decoding, Groq's latency): at 2× the playhead covers twice
+ * the video per second, so the lookahead doubles. Slower than 1× keeps the 1× lookahead.
+ */
+export function forPlaybackRate(options: ScheduleOptions, rate: number): ScheduleOptions {
+  const scale = Number.isFinite(rate) && rate > 1 ? Math.min(rate, MAX_RATE) : 1;
+  return scale === 1 ? options : { ...options, lookaheadSeconds: options.lookaheadSeconds * scale };
+}
+
 const EPS = 0.05;
 
 const live = (job: Job) => job.status !== "error";

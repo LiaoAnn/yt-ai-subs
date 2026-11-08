@@ -51,4 +51,30 @@ describe("AudioStore", () => {
     store.prune(200, () => true);
     expect([...store.clusters.values()].map((c) => c.start)).toEqual([200]);
   });
+
+  it("drops audio far from the playhead even when nothing was transcribed", () => {
+    const store = new AudioStore();
+    store.append(1, bytes(initSegment()), true, null, null);
+    const starts = [0, 90_000, 650_000, 700_000, 1_400_000];
+    store.append(1, bytes(...starts.map((ms) => audioCluster(ms, 1000))), false, null, null);
+    // Playhead at 700 s, nothing done (extension off): only audio within 600 s stays.
+    store.prune(700, () => false);
+    expect([...store.clusters.values()].map((c) => c.start)).toEqual([650, 700]);
+    // Done and only 50 s behind: kept, so a chunk being cut there still has it.
+    store.prune(700, () => true);
+    expect([...store.clusters.values()].map((c) => c.start)).toEqual([650, 700]);
+    expect(store.byteLength()).toBeGreaterThan(0);
+  });
+
+  it("forgets init segments of old streams once their audio is gone", () => {
+    const store = new AudioStore();
+    store.append(1, bytes(initSegment(), audioCluster(0, 1000)), true, null, null);
+    store.append(2, bytes(initSegment(), audioCluster(900_000, 1000)), true, null, null);
+    store.append(1, bytes(initSegment()), true, null, null); // quality switch on buffer 1
+    expect(store.inits.size).toBe(3);
+    store.prune(900, () => false);
+    // Buffer 1's first stream lost its only cluster; both current streams keep theirs.
+    expect(store.inits.size).toBe(2);
+    expect(store.clusters.size).toBe(1);
+  });
 });

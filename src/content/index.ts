@@ -29,12 +29,14 @@ import { energyEnvelope, findQuietCut, isNearFloor } from "./energy";
 import { Overlay } from "./overlay";
 import {
   DEFAULT_SCHEDULE,
+  forPlaybackRate,
   isFinished,
   isIrrelevant,
   leadSeconds,
   nextNeeded,
   trimCutSentence,
   type Job,
+  type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
@@ -537,10 +539,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
 }
 
 /** Cancels running jobs a seek made irrelevant. */
-function cancelIrrelevant(target: VideoState, t: number) {
+function cancelIrrelevant(target: VideoState, t: number, options: ScheduleOptions) {
   const ids: string[] = [];
   for (const job of target.jobs.values()) {
-    if (job.status !== "running" || !job.controller || !isIrrelevant(job, t)) continue;
+    if (job.status !== "running" || !job.controller || !isIrrelevant(job, t, options)) continue;
     console.log(
       LOG_PREFIX,
       `cancel ${job.start.toFixed(1)}–${job.end.toFixed(1)} s (playhead ${t.toFixed(1)} s)`,
@@ -555,16 +557,16 @@ function cancelIrrelevant(target: VideoState, t: number) {
 
 function schedule(target: VideoState, v: HTMLVideoElement) {
   const t = v.currentTime;
+  const rate = v.playbackRate;
   const duration = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity;
-  cancelIrrelevant(target, t);
-  if (quota.whisper === "out") {
-    diag.reason = "今天的語音辨識額度用完了";
-    target.store.prune(t, (time) => isFinished(target.jobs.values(), time));
-    return;
-  }
   const low = quota.whisper === "low";
   const maxJobs = low ? 1 : MAX_PARALLEL_JOBS;
-  const options = low ? LOW_QUOTA_SCHEDULE : DEFAULT_SCHEDULE;
+  const options = forPlaybackRate(low ? LOW_QUOTA_SCHEDULE : DEFAULT_SCHEDULE, rate);
+  cancelIrrelevant(target, t, options);
+  if (quota.whisper === "out") {
+    diag.reason = "今天的語音辨識額度用完了";
+    return;
+  }
   for (let guard = 0; inFlight(target) < maxJobs && guard < 4; guard++) {
     const next = nextNeeded([...target.jobs.values()], t, duration, Date.now(), options);
     if (!next) {
@@ -603,8 +605,9 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
         .coverage(job.start, job.end)
         .runs.find((run) => run.start <= job.start + 0.3);
       const have = head ? Math.min(head.end, job.end) - job.start : 0;
-      // Short requests cost as much as 10 s ones: only when the playhead is close.
-      const margin = job.start - t;
+      // Short requests cost as much as 10 s ones: only when the playhead is close (in
+      // wall seconds, so a faster rate starts them earlier).
+      const margin = (job.start - t) / Math.max(1, rate);
       if ((margin < 6 && have >= 8) || (margin < 2 && have >= 3)) {
         job.end = Math.round((job.start + have - 0.1) * 100) / 100;
       } else {
@@ -616,7 +619,6 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
     diag.reason = `送出 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒`;
     void runJob(target, job, duration);
   }
-  target.store.prune(t, (time) => isFinished(target.jobs.values(), time));
 }
 
 // ---------- main loop ----------
@@ -664,6 +666,8 @@ function tick() {
     diag.reason = "還沒收到這支影片的音訊";
     return;
   }
+  // Before any early return: audio piles up while nothing is sent (off, no key, ads).
+  if (v) target.store.prune(v.currentTime, (time) => isFinished(target.jobs.values(), time));
   if (!settingsLoaded) return;
   if (!settings.enabled) {
     abortAll(target);
