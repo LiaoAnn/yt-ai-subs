@@ -40,6 +40,7 @@ import {
   type Truth,
   type WhisperCapture,
 } from "../src/qa/caption-eval.ts";
+import { audioProblem, type AudioState } from "../src/qa/audio-track.ts";
 import { fixtureFrom } from "../src/qa/fixture.ts";
 
 const args = process.argv.slice(2);
@@ -56,7 +57,12 @@ function readJson<T>(path: string): T | null {
 
 interface CaptureFile<T> {
   captures: Record<string, T>;
+  /** The player's audio tracks when the capture was made (absent in early captures). */
+  audio?: AudioState;
 }
+
+/** The audio tracks of each video, from `eval-collect.py audio` (.qa/audio.json). */
+const audioChecks = readJson<Record<string, AudioState>>(join(dir, "audio.json")) ?? {};
 
 interface Evaluated {
   video: DatasetVideo;
@@ -68,7 +74,15 @@ interface Evaluated {
   timeline: FeatureTimeline | null;
 }
 
-function truthOf(gt: GroundTruth): { speech: SpeechTruth; caption: Truth } {
+function truthOf(gt: GroundTruth, video: DatasetVideo): { speech: SpeechTruth; caption: Truth } {
+  if (video.noSpeech) {
+    // Nobody talks: every chunk is a no-speech chunk, every kept line is made up.
+    const supports = { cer: false, recall: false, precision: true, translation: false };
+    return {
+      speech: { speech: [], lines: [], anySpeech: [], precision: true },
+      caption: { speech: [], lines: [], anySpeech: [], reference: null, supports },
+    };
+  }
   const lines = gt.supports.recall ? gt.lines : [];
   const speech = speechIntervals(lines);
   // Where nobody talks: neither the creator (when the track can say so) nor YouTube's
@@ -97,18 +111,33 @@ function evaluate(video: DatasetVideo): Evaluated {
   const fetched = readJson<FetchedVideo>(join(dir, "gt", `${video.videoId}.json`));
   if (!fetched) missing.push("gt");
   const gt = fetched ? groundTruth(fetched, video.language) : null;
-  const dry = readJson<CaptureFile<FeatureCapture>>(join(dir, "dry", `${video.videoId}.json`));
-  const whisper = readJson<CaptureFile<WhisperCapture>>(
-    join(dir, "whisper", `${video.videoId}.json`),
+  // A capture of YouTube's AI dub instead of the original audio is refused (audio-track.ts).
+  const checked = <T extends { audio?: AudioState }>(file: T | null, what: string): T | null => {
+    if (!file) {
+      missing.push(what);
+      return null;
+    }
+    const problem = audioProblem(file.audio, audioChecks[video.videoId]);
+    if (problem) {
+      missing.push(`${what}: ${problem}`);
+      return null;
+    }
+    return file;
+  };
+  const dry = checked(
+    readJson<CaptureFile<FeatureCapture>>(join(dir, "dry", `${video.videoId}.json`)),
+    "dry run",
   );
-  if (!dry) missing.push("dry run");
-  if (!whisper) missing.push("whisper run");
+  const whisper = checked(
+    readJson<CaptureFile<WhisperCapture>>(join(dir, "whisper", `${video.videoId}.json`)),
+    "whisper run",
+  );
   const featureCaptures = [
     ...Object.values(dry?.captures ?? {}),
     ...Object.values(whisper?.captures ?? {}),
   ];
   const timeline = featureCaptures.length ? featureTimeline(featureCaptures) : null;
-  const t = gt ? truthOf(gt) : null;
+  const t = gt ? truthOf(gt, video) : null;
   const voice =
     timeline && t
       ? [10, 30].map((seconds) =>
@@ -140,7 +169,8 @@ function table(rows: string[][]): string {
     .join("\n");
 }
 
-function supportsText(gt: GroundTruth | null): string {
+function supportsText(gt: GroundTruth | null, video: DatasetVideo): string {
+  if (video.noSpeech) return "no speech";
   if (!gt) return "-";
   const s = gt.supports;
   return (
@@ -348,7 +378,7 @@ if (fixtureArgs) {
   }
   const fixture = fixtureFrom(
     e.timeline,
-    truthOf(e.gt).speech,
+    truthOf(e.gt, video).speech,
     video,
     Number(from),
     Number(to),
@@ -373,7 +403,7 @@ if (flag("--dataset")) {
       e.video.category,
       e.video.voice,
       e.video.channel,
-      supportsText(e.gt),
+      supportsText(e.gt, e.video),
       e.gt?.flags.join("; ") ?? "",
       e.missing.join(", "),
     ]);
@@ -393,7 +423,7 @@ for (const e of results) {
     e.video.videoId,
     e.video.category,
     e.video.voice,
-    supportsText(e.gt),
+    supportsText(e.gt, e.video),
     ...voiceCells(e.voice),
     ...filterCells(e.filters),
     ...captionCells(e.captions),

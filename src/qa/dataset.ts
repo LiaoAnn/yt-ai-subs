@@ -32,6 +32,11 @@ export interface DatasetVideo {
   channel: string;
   /** Translate in the Whisper run (a Traditional Chinese reference exists). */
   translate?: boolean;
+  /**
+   * Nobody talks in the stretches we capture (a silent vlog whose track describes the
+   * pictures): every chunk is a no-speech chunk and every line Whisper keeps is made up.
+   */
+  noSpeech?: boolean;
   note?: string;
 }
 
@@ -189,5 +194,212 @@ export const DATASET: readonly DatasetVideo[] = [
     category: "variety",
     voice: "multi male",
     channel: "Snow Man",
+  },
+  // Reality, Japanese, translation tracks only (zh-TW reference, no Japanese text)
+  {
+    videoId: "vgCZDibHYYo",
+    language: "ja",
+    category: "reality",
+    voice: "multi male",
+    channel: "THE ROLAND SHOW",
+    translate: true,
+  },
+  {
+    videoId: "4gJgP1i6DAA",
+    language: "ja",
+    category: "reality",
+    voice: "multi male",
+    channel: "THE ROLAND SHOW",
+    translate: true,
+  },
+  // Interviews and lectures, Japanese
+  {
+    videoId: "dZgXCAWnz2c",
+    language: "ja",
+    category: "interview",
+    voice: "low male",
+    channel: "中田敦彦のYouTube大学 (× 山田孝之)",
+  },
+  {
+    videoId: "p2Qkl30HiL4",
+    language: "ja",
+    category: "interview",
+    voice: "low male",
+    channel: "中田敦彦のYouTube大学 (lecture)",
+  },
+  {
+    videoId: "qh5t4WMroyU",
+    language: "ja",
+    category: "interview",
+    voice: "low male",
+    channel: "中田敦彦のYouTube大学 (lecture)",
+  },
+  {
+    videoId: "r9FKdxYS3B4",
+    language: "ja",
+    category: "interview",
+    voice: "multi mixed",
+    channel: "いがらし朝青 × 小松成美 (2021)",
+  },
+  {
+    videoId: "D5G05hBO8GY",
+    language: "ja",
+    category: "interview",
+    voice: "multi mixed",
+    channel: "いがらし朝青 × 小松成美 (2021)",
+  },
+  {
+    videoId: "AORyhKprcFY",
+    language: "ja",
+    category: "interview",
+    voice: "multi male",
+    channel: "米津玄師 × 吉田直樹",
+  },
+  {
+    videoId: "tQBd744CXBM",
+    language: "ja",
+    category: "interview",
+    voice: "female",
+    channel: "日テレNEWSカルチャー (伊藤沙莉)",
+  },
+  {
+    videoId: "LKTOWTc9l1E",
+    language: "ja",
+    category: "variety",
+    voice: "high female",
+    channel: "ホロライブ切り抜きまとめ (VTuber clips)",
+  },
+  // Games, Japanese
+  {
+    videoId: "0Fk2MSLtrs0",
+    language: "ja",
+    category: "game",
+    voice: "synthetic",
+    channel: "モーのゲーム実況 (ゆっくり実況)",
+    note: "title says ゆっくり (synthesised voices)",
+  },
+  {
+    videoId: "1lARuuPFsQ4",
+    language: "ja",
+    category: "game",
+    voice: "synthetic",
+    channel: "モーのゲーム実況 (ゆっくり実況)",
+    note: "title says ゆっくり (synthesised voices)",
+  },
+  {
+    videoId: "sV0yiaJUR4U",
+    language: "ja",
+    category: "game",
+    voice: "synthetic",
+    channel: "モーのゲーム実況 (ゆっくり実況)",
+    note: "title says ゆっくり (synthesised voices)",
+  },
+  {
+    videoId: "CnWnr8O2nMY",
+    language: "ja",
+    category: "game",
+    voice: "male",
+    channel: "ゲーミングボーイ",
+    note: "game sound and English game voices",
+  },
+  {
+    videoId: "i4rKSX8afd8",
+    language: "ja",
+    category: "game",
+    voice: "male",
+    channel: "ゲーミングボーイ (鬼武者)",
+    note: "game sound and English game voices",
+  },
+  {
+    videoId: "6HEWeWEl4hs",
+    language: "ja",
+    category: "control",
+    voice: "synthetic",
+    channel: "asdfgame (ゆっくり実況, horror game)",
+  },
+  // Vlogs
+  {
+    videoId: "JZwQr8UrEcc",
+    language: "ko",
+    category: "vlog",
+    voice: "multi mixed",
+    channel: "이호정 HOLLYDAY (talk with 김성철)",
+  },
+  {
+    videoId: "kxVk735LST8",
+    language: "ko",
+    category: "vlog",
+    voice: "female",
+    channel: "찬 chan (Tokyo vlog, little talk)",
+  },
+  {
+    videoId: "cth3M1iavGM",
+    language: "ja",
+    category: "vlog",
+    voice: "low male",
+    channel: "徳川の天下統一ch",
+    note: "the low voice of PR #1; automatic track only",
+  },
+  {
+    videoId: "LHZgl2pbY7Q",
+    language: "ja",
+    category: "control",
+    voice: "bgm only",
+    channel: "mitsuba vlog (#142)",
+    noSpeech: true,
+    note: "silent vlog: the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops)",
+  },
+  {
+    videoId: "5Ma5inm_Dac",
+    language: "ja",
+    category: "control",
+    voice: "bgm only",
+    channel: "mitsuba vlog (#85)",
+    noSpeech: true,
+    note: "silent vlog: the track describes the pictures (inferred, not listened to: no automatic track, Whisper gave 3 s loops)",
+  },
+  // News and documentaries
+  {
+    videoId: "ZcItk5mKVwE",
+    language: "ja",
+    category: "news",
+    voice: "male",
+    channel: "日テレNEWS (NNNドキュメント)",
+  },
+  {
+    videoId: "BsY7fhYfr8s",
+    language: "ja",
+    category: "news",
+    voice: "male",
+    channel: "テレ東BIZ (documentary)",
+  },
+  {
+    videoId: "QXzN05rrY4E",
+    language: "ko",
+    category: "news",
+    voice: "multi mixed",
+    channel: "KBS News",
+  },
+  {
+    videoId: "FFe1ZJOyli0",
+    language: "ko",
+    category: "news",
+    voice: "multi mixed",
+    channel: "KBS News (51 s)",
+  },
+  {
+    videoId: "lmH7BFW-pP0",
+    language: "ko",
+    category: "news",
+    voice: "multi mixed",
+    channel: "SBS 뉴스",
+  },
+  // Mixed languages
+  {
+    videoId: "1vu-uMez03U",
+    language: "ja",
+    category: "mixed",
+    voice: "multi male",
+    channel: "&TEAM (Japanese and Korean)",
   },
 ];

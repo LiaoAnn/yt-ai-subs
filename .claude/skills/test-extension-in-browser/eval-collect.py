@@ -34,6 +34,7 @@ class Browser:
     def __init__(self, session):
         self.s = session
         self.ext_id = None
+        self.audio = {}
 
     def ab(self, *args, stdin=None, timeout=120):
         r = subprocess.run(["agent-browser", "--session", self.s, *args], input=stdin,
@@ -193,6 +194,30 @@ GT_JS = r"""(() => { window.__gt = null; (async () => {
 })().then(v => { window.__gt = v; }, e => { window.__gt = JSON.stringify({error: String(e), tracks: []}); }); return "started"; })()"""
 
 
+AUDIO_JS = """(() => { const p = document.getElementById('movie_player');
+ // The track objects are minified: find the part with isAutoDubbed by shape, not by name.
+ const info = t => { const o = t && Object.values(t).find(v => v && typeof v === 'object' && 'isAutoDubbed' in v) || {};
+   return {name: o.name ?? null, isDefault: !!o.isDefault, isAutoDubbed: !!o.isAutoDubbed}; };
+ const list = p?.getAvailableAudioTracks?.() ?? [];
+ const cur = p?.getAudioTrack?.();
+ const out = {tracks: list.map(info), current: cur ? info(cur) : null, switched: false};
+ if (%s && out.current?.isAutoDubbed) {
+   const orig = list.find(t => /original/i.test(info(t).name ?? '')) ?? list.find(t => !info(t).isAutoDubbed);
+   if (orig) { p.setAudioTrack(orig); out.switched = true; }
+ }
+ return JSON.stringify(out); })()"""
+
+
+def audio_state(b, switch):
+    """YouTube auto-dubs some videos (an English AI voice for an English browser): the
+    extension would hear the dub. Reports the audio tracks; with `switch`, selects the
+    original when the current track is auto-dubbed."""
+    try:
+        return b.eval(AUDIO_JS % ("true" if switch else "false"))
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
 def wait_ready(b, tries=40):
     for _ in range(tries):
         try:
@@ -271,6 +296,25 @@ def open_video(b, vid, start=0):
     b.eval("(() => { const v = document.querySelector('video'); v.muted = true; v.play(); return 1; })()")
     if not clear_ads(b):
         return "ad did not end"
+    b.audio = audio_state(b, switch=True)
+    if b.audio.get("switched"):
+        # The extension has already stored some dubbed audio: load the page again. YouTube
+        # keeps the choice for the session (1 of 1 checked); check, and switch again if not.
+        log(vid, "auto-dubbed audio", b.audio.get("current"), "-> original, reloading")
+        b.ab("reload", timeout=120)
+        b.ab("wait", "--load", "load", timeout=60)
+        if not wait_ready(b):
+            return "no player after reload"
+        b.eval("(() => { const v = document.querySelector('video'); v.muted = true; v.play(); return 1; })()")
+        if not clear_ads(b):
+            return "ad did not end"
+        again = audio_state(b, switch=True)
+        again["reloaded"] = True
+        b.audio = again
+        if again.get("switched"):
+            log(vid, "still dubbed after reload; switched again without reload")
+    if (b.audio.get("current") or {}).get("isAutoDubbed") and not b.audio.get("switched"):
+        return "dubbed audio, no original track"
     return None
 
 
@@ -278,6 +322,32 @@ def save(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, ensure_ascii=False)
+
+
+def audio_check(session, root, ids):
+    """Lists each video's audio tracks (auto-dubbed or not) into <root>/audio.json; no capture."""
+    b = Browser(session)
+    b.start()
+    path = f"{root}/audio.json"
+    out = json.load(open(path)) if os.path.exists(path) else {}
+    for vid in ids:
+        if vid in out:
+            continue
+        b.page()
+        b.ab("open", f"https://www.youtube.com/watch?v={vid}", timeout=120)
+        b.ab("wait", "--load", "load", timeout=60)
+        st = wait_ready(b)
+        if not st or st.get("sorry"):
+            log(vid, "FAILED:", "sorry" if st else "no player")
+            if st and st.get("sorry"):
+                break
+            continue
+        clear_ads(b)
+        out[vid] = audio_state(b, switch=False)
+        log(vid, json.dumps(out[vid], ensure_ascii=False))
+        save(path, out)
+        time.sleep(25)  # pace page loads: YouTube shows a CAPTCHA after a few dozen quickly
+    b.ab("close")
 
 
 def dry(session, root, ids, gt_only=False):
@@ -327,7 +397,7 @@ def dry(session, root, ids, gt_only=False):
             time.sleep(10)
             data = b.export(vid)
             log(vid, "dry chunks", len(data), "last t", st.get("t"))
-            save(dry_path, {"videoId": vid, "end": end, "captures": data})
+            save(dry_path, {"videoId": vid, "end": end, "audio": b.audio, "captures": data})
         time.sleep(5)
     log("FAILED LIST", json.dumps(failed))
     b.ab("close")
@@ -336,7 +406,7 @@ def dry(session, root, ids, gt_only=False):
 # A 429 from Groq, as the extension logs it ("Groq 429 on whisper", "語音辨識失敗 429"), not
 # a 429 in some number of a state line.
 TOO_MANY = __import__("re").compile(r"Groq 429|失敗 429")
-CAPS = {"requests": 300, "audio": 14400, "tokens": 50000}
+CAPS = {"requests": 500, "audio": 14400, "tokens": 50000}
 
 
 def usage_of(lines, captures):
@@ -362,8 +432,13 @@ def whisper(session, root, plan_path):
     # What every earlier run used counts against the caps, planned now or not.
     used = {"requests": 0, "audio": 0.0, "tokens": 0}
     os.makedirs(f"{root}/whisper", exist_ok=True)
-    for name in os.listdir(f"{root}/whisper"):
-        prev = json.load(open(f"{root}/whisper/{name}"))
+    # Runs set aside (e.g. .qa/old-dub/whisper/: captured while YouTube played an AI dub)
+    # were billed too.
+    files = [f"{root}/whisper/{n}" for n in os.listdir(f"{root}/whisper")]
+    if os.path.isdir(f"{root}/old-dub/whisper"):
+        files += [f"{root}/old-dub/whisper/{n}" for n in os.listdir(f"{root}/old-dub/whisper")]
+    for path_ in files:
+        prev = json.load(open(path_))
         r, a, t = usage_of(prev.get("log", []), prev.get("captures", {}))
         used["requests"] += r; used["audio"] += a; used["tokens"] += t
     log("used so far", used)
@@ -418,7 +493,7 @@ def whisper(session, root, plan_path):
         r, a, t = usage_of(lines, data)
         used["requests"] += r; used["audio"] += a; used["tokens"] += t
         log(vid, "chunks", len(data), "requests", r, "audio", round(a), "tokens", t, "total", used)
-        save(path, {"videoId": vid, "start": item["start"], "end": item["end"], "translate": translate,
+        save(path, {"videoId": vid, "start": item["start"], "end": item["end"], "translate": translate, "audio": b.audio,
                     "captures": data, "log": lines, "rateLimiter": limits})
         b.ab("console", "--clear")
         b.ab("open", "about:blank")  # leave the video before the extension is turned on again
@@ -443,6 +518,8 @@ if __name__ == "__main__":
     mode, session, root = sys.argv[1:4]
     if mode == "dry":
         dry(session, root, sys.argv[4:])
+    elif mode == "audio":
+        audio_check(session, root, sys.argv[4:])
     elif mode == "gt":
         dry(session, root, sys.argv[4:], gt_only=True)
     elif mode == "whisper":

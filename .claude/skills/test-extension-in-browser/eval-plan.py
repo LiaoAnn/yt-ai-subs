@@ -21,8 +21,16 @@ def lines_of(track):
     return out
 
 
+def dataset_languages(root):
+    """videoId -> spoken language, from src/qa/dataset.ts (next to the .qa folder)."""
+    import re
+    text = open(os.path.join(os.path.dirname(os.path.abspath(root)), "src/qa/dataset.ts")).read()
+    return dict(re.findall(r'videoId: "([^"]+)",\s*language: "(ja|ko)"', text))
+
+
 def main():
     root, ids_file, translate = sys.argv[1], sys.argv[2], set(sys.argv[3].split(","))
+    languages = dataset_languages(root)
     plan = []
     for vid in open(ids_file).read().split():
         path = f"{root}/gt/{vid}.json"
@@ -33,7 +41,10 @@ def main():
         tracks = gt.get("tracks", [])
         asr = next((t for t in tracks if t.get("kind") == "asr"), None)
         langs = {t["languageCode"].split("-")[0] for t in tracks if not t.get("kind")}
-        language = asr["languageCode"].split("-")[0] if asr else ("ko" if "ko" in langs and "ja" not in langs else "ja")
+        language = languages.get(vid)
+        if not language:
+            print("not in src/qa/dataset.ts", vid, file=sys.stderr)
+            continue
         creator = next((t for t in tracks if not t.get("kind") and t["languageCode"].split("-")[0] == language), None)
         creator = creator or next((t for t in tracks if not t.get("kind")), None) or asr
         spans = [(s, e) for s, e, text in lines_of(creator)] if creator else []
