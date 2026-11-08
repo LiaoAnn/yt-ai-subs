@@ -46,6 +46,11 @@ export interface Settings {
   debugCapture: boolean;
   /** Development only: with debugCapture, record audio features but call no API. */
   debugDryRun: boolean;
+  /**
+   * Development only: with debugCapture, ignore creator tracks and transcribe with Whisper
+   * (or measure, with debugDryRun), as the evaluation set needs (src/qa/dataset.ts).
+   */
+  debugForceWhisper: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -59,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showOriginal: true,
   debugCapture: false,
   debugDryRun: false,
+  debugForceWhisper: false,
 };
 
 export const SETTINGS_STORAGE_KEY = "settings";
