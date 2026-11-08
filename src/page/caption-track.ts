@@ -61,11 +61,14 @@ type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The video ID if `response` is a playable live stream's player response, else null. */
-export function liveVideoId(response: unknown): string | null {
+/**
+ * Whether a player response is a live stream's (`videoDetails.isLive`), or null when it has
+ * no video ID. A finished stream's recording comes with `isLive` absent or false.
+ */
+export function liveStatus(response: unknown): { videoId: string; live: boolean } | null {
   if (!isObject(response) || !isObject(response.videoDetails)) return null;
   const { videoId, isLive } = response.videoDetails;
-  return typeof videoId === "string" && isLive === true ? videoId : null;
+  return typeof videoId === "string" ? { videoId, live: isLive === true } : null;
 }
 
 /**

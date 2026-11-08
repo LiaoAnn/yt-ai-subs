@@ -24,7 +24,7 @@ import {
   activeEvents,
   isOurVssId,
   isPlayerEndpoint,
-  liveVideoId,
+  liveStatus,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
@@ -106,8 +106,10 @@ const liveVideos = new Set<string>();
 /** Adds our track to a player response; true if it changed it. */
 function patch(response: unknown): boolean {
   try {
-    const live = liveVideoId(response);
-    if (live) liveVideos.add(live);
+    const status = liveStatus(response);
+    // A stream that ended (watched again as a recording) is an ordinary video again.
+    if (status?.live) liveVideos.add(status.videoId);
+    else if (status) liveVideos.delete(status.videoId);
     const config = readConfig();
     // The creator's own track in our language replaces ours (creator-hooks.ts).
     if (noteResponse(response, config)) return false;

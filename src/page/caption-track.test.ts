@@ -5,7 +5,7 @@ import {
   TrackHealth,
   activeEvents,
   isPlayerEndpoint,
-  liveVideoId,
+  liveStatus,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
@@ -33,14 +33,15 @@ describe("live streams", () => {
     const live = playable({
       videoDetails: { videoId: "live1", isLive: true, isLiveContent: true },
     });
-    expect(liveVideoId(live)).toBe("live1");
+    expect(liveStatus(live)).toEqual({ videoId: "live1", live: true });
     expect(patchPlayerResponse(live, DEFAULT_TRACK_CONFIG)).toBeNull();
     expect(live).not.toHaveProperty("captions");
     // A finished stream (isLiveContent only) is an ordinary video.
     const vod = playable({ videoDetails: { videoId: "vod1", isLiveContent: true } });
-    expect(liveVideoId(vod)).toBeNull();
+    expect(liveStatus(vod)).toEqual({ videoId: "vod1", live: false });
     expect(patchPlayerResponse(vod, DEFAULT_TRACK_CONFIG)).toBe("vod1");
-    expect(liveVideoId(null)).toBeNull();
+    expect(liveStatus(null)).toBeNull();
+    expect(liveStatus({ videoDetails: {} })).toBeNull();
   });
 });
 
