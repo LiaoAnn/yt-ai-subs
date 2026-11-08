@@ -217,7 +217,7 @@ export function App() {
               </div>
               {renamed && (
                 <p className="text-xs text-muted-foreground" data-testid="track-rename-note">
-                  字幕選單（CC）裡的軌名會在下一部影片或重新整理頁面後更新；字幕內容會照新設定更新。
+                  字幕選單（CC）裡的軌名，以及要不要改用創作者上傳的字幕，會在下一部影片或重新整理頁面後更新；其餘字幕內容會照新設定更新。
                 </p>
               )}
             </fieldset>

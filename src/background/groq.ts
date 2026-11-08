@@ -197,6 +197,20 @@ export function parseTranslatedLines(text: string, count: number): (string | und
   return out.some((line) => line !== undefined) ? out : null;
 }
 
+/** Caption cards ([拍手], (감격), 【…】) and speaker labels (리원 / …, [인모] …, 太郎：…). */
+const CAPTION_NOTE = /[[(（【]|^[^\s/／:：]{1,12}\s*[/／:：]/u;
+
+/**
+ * Extra rule for creator-made lines, which carry caption cards and speaker labels; only
+ * when a line has one, so Whisper's lines do not pay for it.
+ */
+export function captionNotesRule(lines: readonly string[]): string {
+  if (!lines.some((line) => CAPTION_NOTE.test(line))) return "";
+  return `
+- Text in brackets ([…], (…), （…）, 【…】) is a caption card, a sound or a stage note, not speech: translate it inside the same kind of brackets.
+- A speaker label at the start of a line (a name followed by "/", ":" or "：", or a name in brackets) stays at the start, with the name kept as a name; translate only the speech after it.`;
+}
+
 export async function translate(
   limiter: RateLimiter,
   settings: Settings,
@@ -214,7 +228,7 @@ The input is a JSON object of numbered lines, consecutive pieces of speech from 
 - Translate idioms and slang by meaning, not word for word.
 - Write natural, concise subtitles in the spoken style of the target language${settings.targetLanguage === "zh-TW" ? " as used in Taiwan (Taiwanese vocabulary, no Mainland terms)" : ""}. Leave out pure fillers (えっと, あの, まあ, 그, 뭐, um); a line that is only a filler gets a short natural interjection.
 - Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout.
-- Keep a line that is already in the target language.
+- Keep a line that is already in the target language.${captionNotesRule(lines)}
 Reply ONLY with a JSON object with exactly the same keys: {"1": "...", "2": "...", ...}`;
   const user =
     (context ? `Previous lines (original → translation), for context only:\n${context}\n\n` : "") +
