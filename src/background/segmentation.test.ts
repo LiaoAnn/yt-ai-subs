@@ -208,6 +208,10 @@ describe("whisperToCues", () => {
     expect(isHallucination("チャンネル登録よろしく")).toBe(true);
     expect(isHallucination("시청해 주셔서 감사합니다")).toBe(true);
     expect(isHallucination("今日はいい天気")).toBe(false);
+    expect(isHallucination("〈字幕〉")).toBe(true);
+    expect(isHallucination("[音楽]")).toBe(true);
+    expect(isHallucination("(笑) そうですね")).toBe(false);
+    expect(isHallucination("「はい」")).toBe(false);
   });
 });
 
