@@ -70,16 +70,25 @@ describe("bestVoicedWindow", () => {
 
   it("does not take a held low sound for a voice", () => {
     expect(bestVoicedWindow(voiceFeatures(lowVoice(4, true), RATE))).toBeLessThan(MIN_VOICED_SHARE);
-    // Bass below 150 Hz under the same tones, switching on and off with a beat.
-    const withBass = lowVoice(4).map((s, i) => s + 0.6 * Math.sin((2 * Math.PI * 70 * i) / RATE));
-    expect(bestVoicedWindow(voiceFeatures(withBass, RATE))).toBeLessThan(MIN_VOICED_SHARE);
   });
 
-  it("keeps the speech-band rule for older captures without wideShare", () => {
-    const { wideShare: _, ...older } = voiceFeatures(lowVoice(4), RATE);
-    expect(bestVoicedWindow(older)).toBe(0);
-    const { wideShare: __, ...talk } = voiceFeatures(tone(1000, 3), RATE);
-    expect(bestVoicedWindow(talk)).toBeGreaterThan(0.9);
+  it("finds syllables over bass (talk over music)", () => {
+    const withBass = lowVoice(4).map((s, i) => s + 0.6 * Math.sin((2 * Math.PI * 70 * i) / RATE));
+    expect(bestVoicedWindow(voiceFeatures(withBass, RATE))).toBeGreaterThanOrEqual(
+      MIN_VOICED_SHARE,
+    );
+  });
+
+  it("finds a quiet voice over steady noise, but not the noise alone", () => {
+    const hiss = noise(4).map((s) => s * 0.3);
+    const quiet = lowVoice(4).map((s, i) => 0.3 * s + hiss[i]! * 0.1);
+    expect(bestVoicedWindow(voiceFeatures(quiet, RATE))).toBeGreaterThanOrEqual(MIN_VOICED_SHARE);
+    expect(bestVoicedWindow(voiceFeatures(hiss, RATE))).toBeLessThan(MIN_VOICED_SHARE);
+  });
+
+  it("does not take near-silence that flickers for a voice", () => {
+    const faint = lowVoice(4).map((s) => s * 0.0003);
+    expect(bestVoicedWindow(voiceFeatures(faint, RATE))).toBeLessThan(MIN_VOICED_SHARE);
   });
 
   it("handles audio shorter than the window", () => {

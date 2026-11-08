@@ -18,23 +18,25 @@ interface Floor {
 }
 
 /**
- * Floors per fixture (name → floor): what main reached when the fixtures were written
- * (2026-11-08, voice.ts as of PR #1), rounded down. Several are weak on purpose, so that a
- * fix shows: raise a floor when a change improves it.
+ * Floors per fixture (name → floor): what main reached, rounded down. Written on 2026-11-08
+ * (voice.ts as of PR #1); recall floors raised and music floors lowered with the syllable
+ * rule (voice detection sends when in doubt; the filters after Whisper catch made-up text,
+ * see AGENTS.md "Voice activity"). Raise a floor when a change improves it.
  */
 const FLOORS: Record<string, Floor> = {
   // cth3M1iavGM 0:30–1:20, the low male voice of PR #1 (weak labels: YouTube's automatic track)
-  "low-male-voice": { talk10: 0.98, talk30: 1, maxSkippedLines10: 3, maxSkippedLines30: 0 },
+  "low-male-voice": { talk10: 1, talk30: 1, maxSkippedLines10: 0, maxSkippedLines30: 0 },
   // LKTOWTc9l1E 1:40–2:50, VTuber clips: high female voices, sound effects
   "high-female-voices": { talk10: 1, talk30: 1, maxSkippedLines10: 0, maxSkippedLines30: 0 },
   // _xhw8bUhWOk 0:00–1:10, variety talk (several speakers) over BGM
   "talk-over-bgm": { talk10: 1, talk30: 1, maxSkippedLines10: 0, maxSkippedLines30: 0 },
   // kxVk735LST8 4:00–5:00, a vlog with little, quiet talk: the weakest recall of the set
-  "quiet-female-vlog": { talk10: 0.63, talk30: 1, maxSkippedLines10: 6, maxSkippedLines30: 0 },
-  // LHZgl2pbY7Q 0:00–2:00, a silent vlog with BGM: nearly all of it is sent today
-  "bgm-only-silent-vlog": { loudSkipped10: 0.15, loudSkipped30: 0 },
-  // Il3rOIG-6pg 6:20–8:00, music after the talk ends: about two thirds of 10 s chunks skipped
-  "music-after-talk": { loudSkipped10: 0.63, loudSkipped30: 0 },
+  "quiet-female-vlog": { talk10: 0.88, talk30: 1, maxSkippedLines10: 3, maxSkippedLines30: 0 },
+  // LHZgl2pbY7Q 0:00–2:00, a silent vlog with BGM: nearly all of it is sent (1 in 98 10 s
+  // chunks skipped; 15 before the syllable rule)
+  "bgm-only-silent-vlog": { loudSkipped10: 0.01, loudSkipped30: 0 },
+  // Il3rOIG-6pg 6:20–8:00, music after the talk ends: 8 of 47 10 s chunks skipped (30 before)
+  "music-after-talk": { loudSkipped10: 0.17, loudSkipped30: 0 },
 };
 
 const fixtures = Object.values(

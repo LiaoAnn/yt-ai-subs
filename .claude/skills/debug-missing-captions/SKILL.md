@@ -28,7 +28,7 @@ Checked in this order (`src/content/index.ts`); nothing shows while an ad plays 
 
 ## Log lines (`[yt-ai-subs]` in the tab's console)
 
-- `no voice, skipped <start>–<end> s (voiced <n>%)`: voice detection (`src/content/voice.ts`) skipped the chunk; the threshold is 45%. A real talk chunk near 45% means the features do not fit this voice: measure them (`voiceFeatures`) against the speech times Whisper finds when the chunk is sent.
+- `no voice, skipped <start>–<end> s (voiced <n>%)`: voice detection (`src/content/voice.ts`) skipped the chunk; the threshold is 30% (it sends when in doubt). A real talk chunk under 30% means the features do not fit this voice: measure them (`voiceFeatures`) against the speech times Whisper finds when the chunk is sent.
 - `dry run <start>–<end> s (voiced <n>%)`: the same decision in a dry run; nothing is sent.
 - `whisper <start>–<end> s (<n> s audio, cut at <dB> dB (pause))`: the chunk was sent; compare its lines with the gap. A chunk with audio but no lines was emptied by the hallucination filters (`src/background/segmentation.ts`); a debug capture shows Whisper's raw segments and why each was dropped.
 - `translation <label>: <n> lines, <tokens> tokens, <ms> ms, waited <ms> ms for the rate limit`: long waits mean the limiter is the delay, not Whisper.

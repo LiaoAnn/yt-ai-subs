@@ -47,6 +47,8 @@ const HALLUCINATIONS: readonly RegExp[] = [
   /^(\s*[.…。]+\s*)$/,
   /시청해\s*주셔서\s*감사합니다/,
   /구독과\s*좋아요/,
+  // A news anchor's sign-off from Whisper's training data ("MBC 뉴스 김성현입니다").
+  /MBC\s*뉴스\s*\S*입니다/,
   /^字幕/,
   // Only a bracketed note ("〈字幕〉", "[音楽]", "(笑)"): never speech.
   /^\s*[[(（〈《【<][^\])）〉》】>]*[\])）〉》】>]\s*$/,
@@ -77,6 +79,13 @@ const LOW_LOGPROB = -0.8;
 /** Below this, Whisper's own decoder counts a segment as failed. */
 const FAILED_LOGPROB = -1;
 /**
+ * A fallback window (Whisper failed at temperature 0 and decoded again hotter) passes only
+ * when it is confident: over BGM (LHZgl2pbY7Q) Whisper listed ingredients at temperature
+ * 0.4 and avg_logprob -0.81; the real speech below -0.8 in fallback windows of the
+ * evaluation set (4 segments) was itself garbled.
+ */
+const FALLBACK_MIN_LOGPROB = -0.8;
+/**
  * Whisper decodes in windows of up to 30 s and re-decodes a failed window at a higher
  * temperature; over music the result is a loop of near-identical made-up sentences. A
  * fallback window whose text (consecutive repeats removed) has fewer distinct character
@@ -103,9 +112,17 @@ function triples(text: string): Set<string> {
   return new Set(chars.slice(2).map((c, k) => chars[k]! + chars[k + 1]! + c));
 }
 
+/** A segment loops when this share of its three-character sequences recurs in another one. */
+const LOOP_MIN_SHARED = 0.4;
+
 /**
  * Segments of fallback windows (temperature above 0) that loop on themselves. Segments of
- * one window share their decode statistics, which is how windows are told apart.
+ * one window share their decode statistics, which is how windows are told apart. In a
+ * window whose text repeats itself (distinctPairs), a segment loops when it shares at least
+ * LOOP_MIN_SHARED of its three-character sequences with another segment of other text. A
+ * long stretch of real talk also repeats character pairs ("って", "ない") and shares a
+ * sequence here and there, but not most of a sentence; real speech in the same window as
+ * a loop is kept.
  */
 export function repetitiveFallbacks(segments: readonly WhisperSegment[]): Set<WhisperSegment> {
   const out = new Set<WhisperSegment>();
@@ -118,14 +135,16 @@ export function repetitiveFallbacks(segments: readonly WhisperSegment[]): Set<Wh
       const texts = window.map((s) => normalize(s.text));
       const text = texts.filter((t, k) => k === 0 || t !== texts[k - 1]).join("");
       if ([...text].length >= 20 && distinctPairs(text) < FALLBACK_MIN_DISTINCT) {
-        // Only the segments that take part in the loop: real speech in the same window
-        // shares no three-character sequence with the rest.
         const sets = texts.map(triples);
         window.forEach((segment, k) => {
-          const loops = sets.some(
-            (other, m) =>
-              m !== k && texts[m] !== texts[k] && [...sets[k]!].some((x) => other.has(x)),
-          );
+          const loops = texts.some((other, m) => {
+            if (m === k || other === texts[k]) return false;
+            const mine = sets[k]!;
+            if (!mine.size) return false;
+            let shared = 0;
+            for (const x of mine) if (sets[m]!.has(x)) shared++;
+            return shared / mine.size >= LOOP_MIN_SHARED;
+          });
           if (loops) out.add(segment);
         });
       }
@@ -155,6 +174,9 @@ export function rejectReason(segment: WhisperSegment, context: RejectContext): s
   const logprob = segment.avg_logprob ?? 0;
   if (noSpeech > NO_SPEECH_PROB && logprob < LOW_LOGPROB) return "no speech";
   if (logprob < FAILED_LOGPROB) return "low confidence";
+  if ((segment.temperature ?? 0) > 0 && logprob < FALLBACK_MIN_LOGPROB) {
+    return "unsure fallback decode";
+  }
   if (context.repetitive) return "repetitive fallback decode";
   if (context.noWords) return "no words";
   const plain = normalize(text);

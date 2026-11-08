@@ -207,6 +207,8 @@ describe("whisperToCues", () => {
   it("knows the common hallucinations", () => {
     expect(isHallucination("チャンネル登録よろしく")).toBe(true);
     expect(isHallucination("시청해 주셔서 감사합니다")).toBe(true);
+    expect(isHallucination("MBC 뉴스 김성현입니다.")).toBe(true);
+    expect(isHallucination("MBC 뉴스를 봤어요")).toBe(false);
     expect(isHallucination("今日はいい天気")).toBe(false);
     expect(isHallucination("〈字幕〉")).toBe(true);
     expect(isHallucination("[音楽]")).toBe(true);
@@ -226,6 +228,14 @@ describe("rejectReason (made-up text over music and silence)", () => {
   it("drops segments without any aligned word, or of a looping fallback window", () => {
     expect(rejectReason(speech, { ...ok, noWords: true })).toBe("no words");
     expect(rejectReason(speech, { ...ok, repetitive: true })).toBe("repetitive fallback decode");
+  });
+
+  it("drops an unsure fallback decode, but not the same confidence at temperature 0", () => {
+    const listed = { start: 0, end: 3, text: "エビの皮", avg_logprob: -0.81 };
+    expect(rejectReason({ ...listed, temperature: 0.4 }, ok)).toBe("unsure fallback decode");
+    expect(rejectReason({ ...listed, temperature: 0 }, ok)).toBe("");
+    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.8 }, ok)).toBe("");
+    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.7 }, ok)).toBe("");
   });
 
   it("drops a third identical segment in a row and long repeats of the prompt", () => {
@@ -259,7 +269,7 @@ describe("repetitiveFallbacks", () => {
     const music = window(
       [
         "私は朝食を食べるために、",
-        "私は早く食べます。",
+        "私は朝食を早く食べます。",
         "私は朝食を食べる必要があります。",
         "私は朝食を食べます。",
       ],
@@ -297,7 +307,7 @@ describe("repetitiveFallbacks", () => {
       [
         "アンケートのご協力お願いします",
         "私は朝食を食べるために、",
-        "私は早く食べます。",
+        "私は朝食を早く食べます。",
         "私は朝食を食べる必要があります。",
         "私は朝食を食べます。",
       ],
@@ -306,6 +316,25 @@ describe("repetitiveFallbacks", () => {
     const flagged = repetitiveFallbacks(mixed);
     expect(flagged.has(mixed[0]!)).toBe(false);
     expect(flagged.size).toBe(4);
+  });
+
+  it("keeps a long fallback window of real talk whose sentences share a sequence or two", () => {
+    // LKTOWTc9l1E 182 s: real talk at temperature 0.2, 183 characters, distinctPairs 0.74
+    const talk = window(
+      [
+        "みんなペコーラに貢なー",
+        "いいの?早くペコちゃんに貢がないと ほらー",
+        "いやもうカナタちゃんのこの笑顔好きなんだよね",
+        "私はまな板です この ほら見て この笑顔",
+        "たまらない なんかもう私はこうなのです",
+        "これが僕なのです もう最高",
+        "ペコーラはこのゲームをやるにあたって 思ったもん",
+        "笑顔って他にいないんかなと思いつつも ちゃんとこんなににっこり笑ってるのは",
+        "カナタちゃんのみ もう諦めてるのかな",
+      ],
+      0.2,
+    );
+    expect(repetitiveFallbacks(talk).size).toBe(0);
   });
 });
 
