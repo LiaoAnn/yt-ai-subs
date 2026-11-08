@@ -16,6 +16,7 @@ import {
   activeEvents,
   isOurVssId,
   isPlayerEndpoint,
+  liveVideoId,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
@@ -91,9 +92,14 @@ function readConfig() {
   }
 }
 
+/** Live streams seen in player responses (they get no track and no captions). */
+const liveVideos = new Set<string>();
+
 /** Adds our track to a player response; true if it changed it. */
 function patch(response: unknown): boolean {
   try {
+    const live = liveVideoId(response);
+    if (live) liveVideos.add(live);
     const videoId = patchPlayerResponse(response, readConfig());
     if (videoId) console.log(LOG_PREFIX, "caption track added to the player response", videoId);
     return videoId !== null;
@@ -387,7 +393,8 @@ function control() {
         }),
       );
     }
-    const key = JSON.stringify([videoId, verdict.mode, verdict.reason]);
+    const live = videoId !== null && liveVideos.has(videoId);
+    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live]);
     // Repeat now and then, in case the content script missed it (it loads after us).
     if (key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
       const changed = key !== lastPosted;
@@ -404,7 +411,7 @@ function control() {
           }
         }
       }
-      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason });
+      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason, live });
     }
   }, CONTROL_MS);
 }

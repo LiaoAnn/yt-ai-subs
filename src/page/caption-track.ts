@@ -42,9 +42,16 @@ type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** The video ID if `response` is a playable live stream's player response, else null. */
+export function liveVideoId(response: unknown): string | null {
+  if (!isObject(response) || !isObject(response.videoDetails)) return null;
+  const { videoId, isLive } = response.videoDetails;
+  return typeof videoId === "string" && isLive === true ? videoId : null;
+}
+
 /**
  * Adds our track to a player response (in place). Returns the video ID when it did, null
- * when the response is not a playable video's or already has the track.
+ * when the response is not a playable video's, is a live stream's or already has the track.
  */
 export function patchPlayerResponse(response: unknown, config: TrackConfig): string | null {
   if (!config.enabled || !isObject(response)) return null;
@@ -52,6 +59,7 @@ export function patchPlayerResponse(response: unknown, config: TrackConfig): str
   const playability = response.playabilityStatus;
   if (!isObject(details) || typeof details.videoId !== "string") return null;
   if (!isObject(playability) || playability.status !== "OK") return null;
+  if (details.isLive === true) return null; // no captions for live streams
   const videoId = details.videoId;
 
   const track = {

@@ -20,7 +20,7 @@ import {
   withDefaults,
   type Settings,
 } from "@/shared/settings";
-import { videoIdFromUrl } from "@/shared/youtube";
+import { unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
@@ -202,11 +202,15 @@ window.addEventListener("message", (event) => {
   }
 });
 
+/** Why the current page gets no captions (live stream, Shorts), or "". */
+const unsupported = (videoId: string | null) =>
+  unsupportedReason(location.pathname, captionTrack.isLive(videoId));
+
 function onSegment(message: SegmentMessage) {
   diag.segments++;
   if (diag.segments === 1) console.log(LOG_PREFIX, "receiving audio");
   const videoId = message.videoId ?? videoIdFromUrl(location.href);
-  if (!videoId) return;
+  if (!videoId || unsupported(videoId)) return; // keep no audio that will never be sent
   if (!state || state.videoId !== videoId) {
     if (state) abortAll(state);
     state = newVideoState(videoId);
@@ -635,8 +639,14 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
   const t = v?.currentTime ?? 0;
   const onScreen = target?.cues.some((cue) => cue.start <= t + 1 && cue.end > t - 5) ?? false;
   let message = "";
-  if (!settings.enabled || isAdShowing() || !settingsLoaded) message = "";
-  else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
+  if (
+    !settings.enabled ||
+    isAdShowing() ||
+    !settingsLoaded ||
+    unsupported(videoIdFromUrl(location.href))
+  ) {
+    message = ""; // off for live streams and Shorts: the popup says why
+  } else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
   else if (target?.lastError) message = `AI 字幕：${target.lastError}`;
   else if (quota.whisper === "out") message = "AI 字幕：今天的語音辨識額度用完了";
   else if (!diag.pageReady && playedLong) message = "AI 字幕：沒掛上播放器，請重新整理頁面";
@@ -669,6 +679,14 @@ function tick() {
   // Before any early return: audio piles up while nothing is sent (off, no key, ads).
   if (v) target.store.prune(v.currentTime, (time) => isFinished(target.jobs.values(), time));
   if (!settingsLoaded) return;
+  const reason = unsupported(target.videoId);
+  if (reason) {
+    if (diag.reason !== reason) console.log(LOG_PREFIX, `off for this video: ${reason}`);
+    abortAll(target);
+    target.store.prune(Infinity, () => true);
+    diag.reason = reason;
+    return;
+  }
   if (!settings.enabled) {
     abortAll(target);
     diag.reason = "已關閉";
@@ -792,9 +810,13 @@ setInterval(render, RENDER_MS);
 // The popup asks which display mode this tab uses.
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if ((message as { type?: unknown } | null)?.type !== "get-display-mode") return false;
-  const reply: DisplayModeReply = settings.enabled
-    ? captionTrack.mode(videoIdFromUrl(location.href))
-    : { videoId: videoIdFromUrl(location.href), mode: "pending", reason: "" };
+  const videoId = videoIdFromUrl(location.href);
+  const off = unsupported(videoId);
+  const reply: DisplayModeReply = !settings.enabled
+    ? { videoId, mode: "pending", reason: "" }
+    : off
+      ? { videoId, mode: "off", reason: off }
+      : captionTrack.mode(videoId);
   sendResponse(reply);
   return false;
 });
