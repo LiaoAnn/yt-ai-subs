@@ -54,6 +54,12 @@ export interface Coverage {
 export type Readiness = "ready" | "wait" | "never";
 
 /**
+ * Audio further than this from the playhead (seconds) is dropped. YouTube's own audio
+ * buffer holds a few minutes; beyond it, coming back makes YouTube append the audio again.
+ */
+export const MAX_DISTANCE_SECONDS = 600;
+
+/**
  * Longest Cluster header findClusters needs (ID 4 + size 8 + CRC-32 6 + Timecode 1 + 8 + 8),
  * rounded up: the bytes kept from one append in case a header continues in the next.
  */
@@ -261,18 +267,45 @@ export class AudioStore {
     return "wait";
   }
 
-  /** Drops clusters that ended well before `t` and for which `isDone` says we are finished. */
-  prune(t: number, isDone: (time: number) => boolean, keepSeconds = 120): void {
+  /**
+   * Drops audio no chunk will need: clusters that ended more than `keepSeconds` before `t`
+   * and that `isDone` says are transcribed, and any cluster more than `maxDistance` away
+   * from `t`, done or not (left behind by seeks, or never sent: extension off, no key, out
+   * of budget). YouTube keeps less than that in its own buffer and appends it again when
+   * the viewer comes back, so this bounds memory on long videos without losing audio.
+   */
+  prune(
+    t: number,
+    isDone: (time: number) => boolean,
+    keepSeconds = 120,
+    maxDistance = MAX_DISTANCE_SECONDS,
+  ): void {
     for (const [key, cluster] of this.clusters) {
       const end = this.clusterEnd(cluster);
-      if (
+      const behindAndDone =
         end < t - keepSeconds &&
         isDone(cluster.start) &&
-        isDone(Math.max(cluster.start, end - 0.1))
-      ) {
+        isDone(Math.max(cluster.start, end - 0.1));
+      if (behindAndDone || end < t - maxDistance || cluster.start > t + maxDistance) {
         this.clusters.delete(key);
       }
     }
+    // Init segments of streams that have no clusters left and are not current.
+    const current = new Set([...this.streams.values()].map((stream) => stream.initKey));
+    const used = new Set([...this.clusters.values()].map((cluster) => cluster.initKey));
+    for (const key of this.inits.keys()) {
+      if (!current.has(key) && !used.has(key)) this.inits.delete(key);
+    }
+  }
+
+  /** Bytes held (init segments and clusters), for diagnostics. */
+  byteLength(): number {
+    let total = 0;
+    for (const init of this.inits.values()) total += init.length;
+    for (const cluster of this.clusters.values()) {
+      for (const part of cluster.parts) total += part.length;
+    }
+    return total;
   }
 
   /** Time ranges held, merged per stream, for diagnostics. */

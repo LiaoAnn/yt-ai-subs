@@ -79,6 +79,11 @@ export class CaptionTrackBridge {
     }
   }
 
+  /** Whether the page script saw `videoId`'s player response say it is a live stream. */
+  isLive(videoId: string | null): boolean {
+    return videoId !== null && this.verdict?.videoId === videoId && this.verdict.live === true;
+  }
+
   /** The mode for `videoId` (the video in the URL). */
   mode(videoId: string | null, now = Date.now()): DisplayModeReply {
     if (!videoId) return { videoId, mode: "pending", reason: "" };

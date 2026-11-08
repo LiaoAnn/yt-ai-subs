@@ -4,7 +4,7 @@ import { toJson3 } from "./captions";
 import { PAGE_COMMAND_TAG, PAGE_MESSAGE_TAG, isPageCommand, isPageMessage } from "./messages";
 import { DEFAULT_SETTINGS } from "./settings";
 import { DEFAULT_TRACK_CONFIG, parseTrackConfig, trackConfigFromSettings } from "./track-config";
-import { videoIdFromUrl } from "./youtube";
+import { unsupportedReason, videoIdFromUrl } from "./youtube";
 
 describe("toJson3", () => {
   it("maps cues to timedtext events in milliseconds", () => {
@@ -179,5 +179,14 @@ describe("newSpan", () => {
     ).toEqual([20, 25]);
     expect(newSpan([[0, 5]], [[0, 5]])).toBeNull();
     expect(newSpan([[0, 5.01]], [[0, 5]])).toBeNull(); // slivers are ignored
+  });
+});
+
+describe("unsupportedReason", () => {
+  it("turns captions off for Shorts and live streams only", () => {
+    expect(unsupportedReason("/watch", false)).toBe("");
+    expect(unsupportedReason("/shorts/abc123", false)).toBe("Shorts 不支援");
+    expect(unsupportedReason("/watch", true)).toBe("直播不支援");
+    expect(unsupportedReason("/live/abc123", false)).toBe(""); // a finished stream's VOD
   });
 });
