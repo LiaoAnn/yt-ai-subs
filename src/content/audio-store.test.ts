@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bytes, cluster, initSegment } from "@/test/webm-fixture";
-import { AudioStore } from "./audio-store";
+import { bytes, cluster, initSegment, simpleBlock, unknownSizeElement } from "@/test/webm-fixture";
+import { AudioStore, concatBytes } from "./audio-store";
 
 /** Cluster at `startMs` with blocks every 20 ms for `lengthMs`. */
 const audioCluster = (startMs: number, lengthMs: number) =>
@@ -8,6 +8,51 @@ const audioCluster = (startMs: number, lengthMs: number) =>
     startMs,
     Array.from({ length: lengthMs / 20 }, (_, i) => i * 20),
   );
+
+/**
+ * A live-style cluster: an 8-byte unknown size and a CRC-32 before the Timecode make a
+ * 21-byte header, the longest kind findClusters reads in practice.
+ */
+const liveCluster = (startMs: number) =>
+  unknownSizeElement(
+    [0x1f, 0x43, 0xb6, 0x75],
+    [
+      0xbf,
+      0x84,
+      0x12,
+      0x34,
+      0x56,
+      0x78, // CRC-32
+      0xe7,
+      0x82,
+      startMs >> 8,
+      startMs & 0xff, // Timecode
+      ...Array.from({ length: 50 }, (_, i) => simpleBlock(i * 20)).flat(),
+    ],
+  );
+
+/** Appends `stream` to a new store, cut at the given byte offsets (the first part is the init). */
+function appendAll(stream: Uint8Array, points: number[]): AudioStore {
+  const store = new AudioStore();
+  const cuts = [0, ...points, stream.length];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    store.append(1, stream.slice(cuts[i], cuts[i + 1]), i === 0, null, null);
+  }
+  return store;
+}
+
+/** Each cluster's start, end and bytes, plus the init bytes, for comparing two stores. */
+function snapshot(store: AudioStore) {
+  const init = [...store.inits.values()].map((b) => [...b]);
+  return [...store.clusters.values()]
+    .toSorted((a, b) => a.start - b.start)
+    .map((c) => ({
+      start: c.start,
+      end: store.clusterEnd(c),
+      bytes: [...concatBytes(c.parts)],
+      init,
+    }));
+}
 
 describe("AudioStore", () => {
   it("indexes WebM clusters by their timecodes, split across appends", () => {
@@ -24,6 +69,50 @@ describe("AudioStore", () => {
     expect(coverage.runs[0]!.end).toBeCloseTo(2.0, 1);
     expect(coverage.covered).toBeCloseTo(2.0, 1);
     expect(store.readiness(0, 2)).toBe("ready");
+  });
+
+  it("keeps every cluster when an append boundary splits a cluster header", () => {
+    const init = initSegment();
+    const clusters = [audioCluster(0, 1000), audioCluster(1000, 1000), audioCluster(2000, 1000)];
+    const stream = bytes(init, ...clusters);
+    const expected = snapshot(appendAll(stream, []));
+    expect(expected.map((c) => c.start)).toEqual([0, 1, 2]);
+    // Every split point after the init (YouTube appends the init whole), and every pair of split points around the second cluster's header
+    // (which also covers a header spread over three appends).
+    const header = init.length + clusters[0]!.length;
+    const splits: number[][] = [];
+    for (let b = init.length + 1; b < init.length + 14; b++) splits.push([init.length, b]);
+    for (let at = init.length; at < stream.length; at++) splits.push([at]);
+    for (let a = header - 2; a < header + 12; a++) {
+      for (let b = a + 1; b < header + 14; b++) splits.push([a, b]);
+    }
+    for (const points of splits) {
+      expect(snapshot(appendAll(stream, points)), `split at ${points.join(",")}`).toEqual(expected);
+    }
+  });
+
+  it("keeps clusters with long headers (unknown size, CRC-32) split at any byte", () => {
+    const init = initSegment();
+    const first = liveCluster(0);
+    const stream = bytes(init, first, liveCluster(1000), liveCluster(2000));
+    const expected = snapshot(appendAll(stream, []));
+    expect(expected.map((c) => c.start)).toEqual([0, 1, 2]);
+    const header = init.length + first.length;
+    for (let at = header - 2; at < header + 24; at++) {
+      expect(snapshot(appendAll(stream, [at])), `split at ${at}`).toEqual(expected);
+    }
+  });
+
+  it("does not glue a cut-off header to a cluster from a seek", () => {
+    const store = new AudioStore();
+    store.append(1, bytes(initSegment(), audioCluster(0, 1000)), true, null, null);
+    // An append that ends with the start of a cluster header (an aborted append)...
+    store.append(1, bytes(audioCluster(1000, 1000).slice(0, 6)), false, null, null);
+    // ...then a seek: a whole cluster from somewhere else.
+    store.append(1, bytes(audioCluster(30_000, 1000)), false, null, null);
+    expect([...store.clusters.values()].map((c) => c.start).toSorted((a, b) => a - b)).toEqual([
+      0, 30,
+    ]);
   });
 
   it("drops media that arrives before any init segment", () => {

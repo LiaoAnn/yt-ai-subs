@@ -902,8 +902,12 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
   if (!settings.enabled || isAdShowing() || !settingsLoaded || source === "target") message = "";
   else if (source === "creator" && !settings.translate) message = "";
   else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
+  // Before lastError: with Whisper out nothing new comes, whatever the last chunk said
+  // (often "translation paused", since the translation budget runs low first). Creator
+  // captions need no Whisper.
+  else if (quota.whisper === "out" && source !== "creator")
+    message = "AI 字幕：今天的語音辨識額度用完了";
   else if (target?.lastError) message = `AI 字幕：${target.lastError}`;
-  else if (quota.whisper === "out") message = "AI 字幕：今天的語音辨識額度用完了";
   else if (!diag.pageReady && playedLong) message = "AI 字幕：沒掛上播放器，請重新整理頁面";
   else if (!target && playedLong) {
     message = diag.audioBuffers
