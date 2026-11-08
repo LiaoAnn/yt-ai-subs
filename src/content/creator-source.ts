@@ -15,11 +15,16 @@ import type { CreatorCaptionsMessage } from "@/shared/messages";
 import type { Settings } from "@/shared/settings";
 
 /** The settings a source decision depends on. */
-export type SourceSettings = Pick<Settings, "translate" | "targetLanguage" | "sourceLanguage">;
+export type SourceSettings = Pick<Settings, "translate" | "targetLanguage" | "sourceLanguage"> &
+  Partial<Pick<Settings, "debugCapture" | "debugForceWhisper">>;
+
+/** Development only: transcribe with Whisper whatever creator tracks the video has. */
+const forcedWhisper = (settings: SourceSettings) =>
+  !!(settings.debugCapture && settings.debugForceWhisper);
 
 /** Changes when a setting the decision depends on changes (then it is made again). */
 export const sourceSettingsKey = (settings: SourceSettings) =>
-  `${settings.translate}\n${settings.targetLanguage}\n${settings.sourceLanguage}`;
+  `${settings.translate}\n${settings.targetLanguage}\n${settings.sourceLanguage}\n${forcedWhisper(settings)}`;
 
 export type CaptionSource =
   | { kind: "deciding" }
@@ -45,6 +50,9 @@ export function decideSource(
   waitedMs: number,
   settings: SourceSettings,
 ): CaptionSource {
+  // The evaluation set (src/qa/dataset.ts) is made of videos with creator tracks: its
+  // Whisper captures need Whisper anyway.
+  if (forcedWhisper(settings)) return { kind: "whisper", reason: "debugForceWhisper" };
   const status = reply?.status ?? "unknown";
   const code = reply?.languageCode ?? "";
   if (

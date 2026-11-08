@@ -97,6 +97,26 @@ describe("decideSource", () => {
   });
 });
 
+describe("decideSource with debugForceWhisper", () => {
+  const forced = { ...SETTINGS, debugCapture: true, debugForceWhisper: true };
+
+  it("uses Whisper at once, even with a usable creator track", () => {
+    const fetched = reply({ status: "fetched", languageCode: "ja" });
+    expect(decideSource(fetched, 0, forced)).toEqual({
+      kind: "whisper",
+      reason: "debugForceWhisper",
+    });
+    expect(decideSource(undefined, 0, forced).kind).toBe("whisper");
+    expect(decideSource(reply({ status: "target", languageCode: "zh-Hant" }), 0, forced).kind).toBe(
+      "whisper",
+    );
+  });
+
+  it("needs debugCapture", () => {
+    expect(decideSource(undefined, 0, { ...forced, debugCapture: false }).kind).toBe("deciding");
+  });
+});
+
 describe("decideSource after a settings change", () => {
   it("drops a target-language creator track the settings no longer want", () => {
     const target = reply({ status: "target", languageCode: "zh-Hant", name: "中文" });
