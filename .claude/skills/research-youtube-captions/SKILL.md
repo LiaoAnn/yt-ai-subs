@@ -30,6 +30,15 @@ Do not say a channel "has Japanese captions" from memory or from what a viewer s
 - **Gaps**: the distribution of gaps between consecutive lines. Lines that butt against each other (gap 0) say nothing about when speech ends, so they can measure speech recall but not precision.
 - Recent videos (2026) often have automatic tracks where a whole sentence is one seg without `tOffsetMs` and a fixed 3 s length; flag every number that depends on them. Older automatic tracks are word-level and more trustworthy.
 
+## Traps (found in the 2026-11 survey of about 400 videos)
+
+- **"Uploaded" tracks that are automatic captions copied**: no `kind`, but the start offset to the automatic track is 0 at the median, |median| and |p90|, the difference is under 0.1 CER, and the text has the automatic track's mistakes. Drop them. One channel can mix copied and hand-made tracks, so judge each video, not the channel.
+- **Hand-made text, YouTube-aligned timing**: start offset exactly 0 but about 0.2 CER. The text is usable; the timing is YouTube's alignment, so it cannot be ground truth for speech timing.
+- **Not speech**: Korean variety tracks mix in caption cards (`[…]`, `(감격)`); drop them before comparing. Some tracks carry speaker labels (`리원 / …`, `[인모] …`), which are useful for multi-speaker checks. Many Japanese "daily vlog" tracks describe a silent vlog; summary-card tracks cover only 13–55% of the video. Check coverage and how much of the automatic text the track contains before trusting it.
+- **Not natural speech**: Japanese dubs of Chinese short dramas, and ゆっくり (synthesised) voices. Use them only as deliberate controls.
+- **Measuring needs the automatic track to have word times**: on 2026 videos only 15–30% of automatic events often have `tOffsetMs`, so end-time differences there rest on a handful of samples.
+- **YouTube rate-limits the VM's IP** after a few hundred page or timedtext fetches (`google.com/sorry`, empty timedtext). Pace the fetches, keep a list of what failed, and retry later instead of hammering.
+
 ## What each kind of source can measure
 
 - Creator track in the spoken language, close to verbatim: Whisper CER, speech recall, and precision if lines leave gaps.
