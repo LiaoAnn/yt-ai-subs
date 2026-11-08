@@ -48,6 +48,7 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 - `src/shared/` code shared by the entry points: message types (`messages.ts`), settings and `chrome.storage.local` access (`settings.ts`), caption data (`captions.ts`), YouTube URL helpers (`youtube.ts`), the `[yt-ai-subs]` log prefix (`log.ts`).
 - Pure logic lives in its own module with a `*.test.ts` next to it (Vitest, Node environment, no `chrome.*`): WebM parsing, audio coverage, scheduling, segmentation, rate limiting, cache eviction, loudness and quiet cuts (`energy.ts`).
 - `src/qa/` offline caption-quality evaluation, run by `scripts/qa-replay.ts` on debug captures (see the `test-extension-in-browser` skill). Debug captures hold other people's transcripts: they live in `.qa/` (gitignored) or a scratchpad, never in git. Keep browser glue (`index.ts`, `wav.ts`'s decoding, `overlay.ts`) thin. Test fixtures go in `src/test/`.
+- `test/ad-skip/` a test-only MV3 extension (plain JS, no build) that mutes, fast-forwards and skips YouTube ads, loaded next to `dist/` in every agent-browser run so ads do not eat test time (the player sends no timedtext requests during an ad). Not part of the product: it is outside `public/`, `pnpm build` never copies it, and the release zip holds only `dist/`.
 
 ## Scripts
 
