@@ -1,6 +1,6 @@
 // Page script: runs in YouTube's MAIN world at document_start, before the player code.
-// Copies every audio segment YouTube appends to its MediaSource buffers (never during ads)
-// and hands it to the content script. YouTube buffers ahead of playback, so this yields
+// Copies every audio segment YouTube appends to the main video's MediaSource buffers (never
+// an ad's: see media-source-kind.ts) and hands it to the content script. YouTube buffers ahead of playback, so this yields
 // future audio without downloading anything extra. It also serves the AI captions as a
 // track in YouTube's own caption (CC) menu (caption-hooks.ts).
 // Bundled as one classic script (IIFE): keep it free of globals and chrome.* APIs.
@@ -13,6 +13,7 @@ import {
 } from "@/shared/messages";
 import { videoIdFromUrl } from "@/shared/youtube";
 import { installCaptionTrack } from "./caption-hooks";
+import { MediaSourceGate, lengthSecondsOf } from "./media-source-kind";
 import { newSpan, type Range } from "./ranges";
 
 const HOOKED = Symbol.for("yt-ai-subs.hooked");
@@ -54,12 +55,86 @@ function isInitSegment(bytes: Uint8Array): boolean {
   return bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70; // 'ftyp'
 }
 
+/** What the page script knows about one MediaSource that has an audio SourceBuffer. */
+interface SourceState {
+  /** Its object URL (what the <video> element's src is set to while it is attached). */
+  url: string | null;
+  gate: MediaSourceGate<SegmentMessage>;
+}
+
+/** `lengthSeconds` per video ID, from every player response the page got. */
+const videoLengths = new Map<string, number>();
+
+function observePlayerResponse(response: unknown) {
+  const length = lengthSecondsOf(response);
+  if (length) videoLengths.set(length.videoId, length.seconds);
+}
+
+function postSegment(message: SegmentMessage) {
+  post(message, [message.bytes]);
+}
+
+const playerVideo = () => document.querySelector<HTMLVideoElement>("#movie_player video");
+
 function install() {
   const audioBuffers = new WeakMap<SourceBuffer, AudioBufferInfo>();
+  const bufferSource = new WeakMap<SourceBuffer, MediaSource>();
+  const sourceUrls = new WeakMap<MediaSource, string>();
+  const sources = new WeakMap<MediaSource, SourceState>();
+  /** MediaSources still being classified (checked on a timer, e.g. for the hold timeout). */
+  const pending = new Map<MediaSource, SourceState>();
   let nextId = 1;
 
-  function hookMediaSource(source: typeof MediaSource | undefined) {
-    const proto = source?.prototype as (MediaSource & { [HOOKED]?: true }) | undefined;
+  const createObjectURL = URL.createObjectURL;
+  URL.createObjectURL = function (this: typeof URL, object: Blob | MediaSource) {
+    const url = createObjectURL.call(this, object);
+    try {
+      if (object instanceof MediaSource) sourceUrls.set(object, url);
+    } catch {
+      // a ManagedMediaSource-only browser: classification falls back below
+    }
+    return url;
+  } as typeof URL.createObjectURL;
+
+  /** Updates a pending MediaSource's classification; passes on what it held, if kept. */
+  function classify(source: MediaSource, state: SourceState) {
+    const { gate } = state;
+    if (gate.kind !== "pending") return;
+    const mainId = videoIdFromUrl(location.href);
+    const mainLength = mainId ? (videoLengths.get(mainId) ?? null) : null;
+    const release = gate.update({
+      duration: source.duration,
+      mainLength,
+      // Attached = the player's <video> plays from it (unknown URL: while it is open).
+      attached: state.url ? playerVideo()?.src === state.url : source.readyState !== "closed",
+      adShowing: isAdShowing(),
+      now: Date.now(),
+    });
+    if (gate.kind === "pending") return;
+    console.log(
+      LOG_PREFIX,
+      `audio MediaSource: ${gate.kind} (duration ${source.duration}, video ${mainId} ` +
+        `${mainLength ?? "?"} s, ${gate.settled.kept} of ` +
+        `${gate.settled.kept + gate.settled.dropped} held segments kept)`,
+    );
+    for (const message of release) postSegment(message);
+    pending.delete(source);
+  }
+
+  let timer: number | null = null;
+  function watchPending() {
+    if (timer !== null) return;
+    timer = window.setInterval(() => {
+      for (const [source, state] of pending) classify(source, state);
+      if (pending.size === 0) {
+        window.clearInterval(timer!);
+        timer = null;
+      }
+    }, 100);
+  }
+
+  function hookMediaSource(mediaSource: typeof MediaSource | undefined) {
+    const proto = mediaSource?.prototype as (MediaSource & { [HOOKED]?: true }) | undefined;
     if (!proto || proto[HOOKED]) return;
     proto[HOOKED] = true;
     const addSourceBuffer = proto.addSourceBuffer;
@@ -67,6 +142,17 @@ function install() {
       const buffer = addSourceBuffer.call(this, mime);
       if (/^audio\//i.test(String(mime))) {
         audioBuffers.set(buffer, { id: nextId++, mime: String(mime) });
+        bufferSource.set(buffer, this);
+        if (!sources.has(this)) {
+          const state: SourceState = {
+            url: sourceUrls.get(this) ?? null,
+            gate: new MediaSourceGate(Date.now()),
+          };
+          sources.set(this, state);
+          pending.set(this, state);
+          classify(this, state);
+          watchPending();
+        }
         post({ [PAGE_MESSAGE_TAG]: true, type: "audio-buffer", mime: String(mime) });
       }
       return buffer;
@@ -78,12 +164,17 @@ function install() {
   const appendBuffer = SourceBuffer.prototype.appendBuffer;
   SourceBuffer.prototype.appendBuffer = function (this: SourceBuffer, data: BufferSource) {
     const info = audioBuffers.get(this);
-    if (!info) return appendBuffer.call(this, data);
+    const source = bufferSource.get(this);
+    const state = source ? sources.get(source) : undefined;
+    // An ad's MediaSource, or one whose segments are no longer wanted.
+    if (!info || !source || !state || state.gate.kind === "ad")
+      return appendBuffer.call(this, data);
 
+    const adShowing = isAdShowing();
     let bytes: Uint8Array<ArrayBuffer> | null = null;
     let before: Range[] | null = null;
     try {
-      if (!isAdShowing()) {
+      if (state.gate.kind !== "fallback" || !adShowing) {
         bytes = copyBytes(data);
         before = ranges(this.buffered);
       }
@@ -105,20 +196,19 @@ function install() {
           } catch {
             // the buffer was removed from its MediaSource
           }
-          post(
-            {
-              [PAGE_MESSAGE_TAG]: true,
-              type: "segment",
-              bufferId: info.id,
-              mime: info.mime,
-              videoId,
-              init: isInitSegment(copy),
-              start: span ? span[0] : null,
-              end: span ? span[1] : null,
-              bytes: copy.buffer,
-            },
-            [copy.buffer],
-          );
+          const message: SegmentMessage = {
+            [PAGE_MESSAGE_TAG]: true,
+            type: "segment",
+            bufferId: info.id,
+            mime: info.mime,
+            videoId,
+            init: isInitSegment(copy),
+            start: span ? span[0] : null,
+            end: span ? span[1] : null,
+            bytes: copy.buffer,
+          };
+          classify(source, state);
+          for (const kept of state.gate.offer(message, adShowing)) postSegment(kept);
         },
         { once: true },
       );
@@ -131,7 +221,7 @@ const flags = window as unknown as { [HOOKED]?: true };
 if (!flags[HOOKED]) {
   flags[HOOKED] = true;
   install();
-  installCaptionTrack();
+  installCaptionTrack(observePlayerResponse);
 }
 
 console.log(LOG_PREFIX, "page script loaded (MAIN world)", document.readyState);

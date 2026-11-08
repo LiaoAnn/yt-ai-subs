@@ -12,6 +12,7 @@ import {
 } from "@/shared/messages";
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
+import { videoIdFromUrl } from "@/shared/youtube";
 import {
   creatorMessage,
   creatorTick,
@@ -25,9 +26,12 @@ import {
   activeEvents,
   isOurVssId,
   isPlayerEndpoint,
+  isRequestedResponse,
+  parseRequestBody,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
+  requestedVideoIds,
   shouldReloadNow,
 } from "./caption-track";
 
@@ -100,6 +104,9 @@ function readConfig() {
   }
 }
 
+/** Called with every player response the page gets (before it is patched). */
+let onPlayerResponse: (response: unknown) => void = () => {};
+
 /** Title, channel, description and tags per video, from the player responses seen. */
 const videoInfos = new Map<string, VideoInfo>();
 
@@ -120,9 +127,17 @@ function noteVideoInfo(response: unknown) {
   }
 }
 
-/** Adds our track to a player response; true if it changed it. */
+/**
+ * Notes a player response of a video the page asked for (its info, its length) and adds our
+ * track to it; true if it changed it. Made-up responses never get here (hookFetch).
+ */
 function patch(response: unknown): boolean {
   noteVideoInfo(response);
+  try {
+    onPlayerResponse(response);
+  } catch {
+    // the observer must not break the page
+  }
   try {
     const config = readConfig();
     // The creator's own track in our language replaces ours (creator-hooks.ts).
@@ -150,6 +165,16 @@ function serve(videoId: string): string {
 
 // ---------- 1. player responses ----------
 
+let skippedLogged = 0;
+function logSkipped(response: unknown) {
+  if (skippedLogged++ >= 5) return;
+  const details = (response as { videoDetails?: { videoId?: unknown } }).videoDetails;
+  console.log(
+    LOG_PREFIX,
+    `player response left alone (no request named ${String(details?.videoId ?? "a video")})`,
+  );
+}
+
 /** The first page load assigns `var ytInitialPlayerResponse = {...}` in an inline script. */
 function hookInitialPlayerResponse() {
   let value: unknown = (window as { ytInitialPlayerResponse?: unknown }).ytInitialPlayerResponse;
@@ -167,6 +192,23 @@ function hookInitialPlayerResponse() {
   } catch (error) {
     console.warn(LOG_PREFIX, "could not hook ytInitialPlayerResponse", error);
   }
+}
+
+/** The JSON body of a youtubei request (YouTube gzips it), or null if it has none. */
+async function requestJson(
+  request: Request | null,
+  init: RequestInit | undefined,
+): Promise<unknown> {
+  let bytes: Uint8Array;
+  const body = init?.body ?? null;
+  if (typeof body === "string") bytes = new TextEncoder().encode(body);
+  else if (body instanceof ArrayBuffer) bytes = new Uint8Array(body);
+  else if (ArrayBuffer.isView(body))
+    bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  else if (body instanceof Blob) bytes = new Uint8Array(await body.arrayBuffer());
+  else if (request) bytes = new Uint8Array(await request.arrayBuffer());
+  else return null;
+  return parseRequestBody(bytes);
 }
 
 const requestUrl = (input: RequestInfo | URL) =>
@@ -190,13 +232,33 @@ function hookFetch() {
         headers: { "content-type": "application/json; charset=UTF-8" },
       });
     }
+    const playerEndpoint = isPlayerEndpoint(url);
+    let request: Request | null = null;
+    if (playerEndpoint && input instanceof Request && !init?.body) {
+      try {
+        request = input.clone(); // before fetch reads the body
+      } catch {
+        request = null;
+      }
+    }
     const response = await originalFetch.call(this, input, init);
-    if (!isPlayerEndpoint(url) || !response.ok) return response;
+    if (!playerEndpoint || !response.ok) return response;
     try {
+      let requested: string[] = [];
+      try {
+        requested = requestedVideoIds(await requestJson(request, init));
+      } catch {
+        // unreadable body: only the video in the URL is patched
+      }
       const body: unknown = await response.clone().json();
       let changed = false;
-      for (const playerResponse of playerResponsesIn(body))
+      for (const playerResponse of playerResponsesIn(body)) {
+        if (!isRequestedResponse(playerResponse, requested, videoIdFromUrl(location.href))) {
+          logSkipped(playerResponse);
+          continue;
+        }
         changed = patch(playerResponse) || changed;
+      }
       if (!changed) return response;
       const text = JSON.stringify(body);
       const headers = new Headers(response.headers);
@@ -325,8 +387,12 @@ function control() {
     let t = 0;
     try {
       if (player?.getVideoData && player.getOption) {
-        videoId = player.getVideoData()?.video_id || null;
         adShowing = player.classList.contains("ad-showing");
+        // During an ad the player reports the ad's video: keep following the video in the
+        // URL, so its track state and health verdict survive the ad.
+        videoId =
+          (adShowing ? videoIdFromUrl(location.href) : null) ??
+          (player.getVideoData()?.video_id || null);
         const list = player.getOption("captions", "tracklist");
         ours = Array.isArray(list)
           ? (list as PlayerTrack[]).find((track) => isOurVssId(track?.vss_id))
@@ -454,7 +520,8 @@ function control() {
   }, CONTROL_MS);
 }
 
-export function installCaptionTrack() {
+export function installCaptionTrack(observePlayerResponse: (response: unknown) => void) {
+  onPlayerResponse = observePlayerResponse;
   installCreatorCaptions();
   hookInitialPlayerResponse();
   hookFetch();

@@ -5,9 +5,12 @@ import {
   TrackHealth,
   activeEvents,
   isPlayerEndpoint,
+  isRequestedResponse,
+  parseRequestBody,
   ourTrackVideoId,
   patchPlayerResponse,
   playerResponsesIn,
+  requestedVideoIds,
   shouldReloadNow,
   showsAnyOf,
   trackBaseUrl,
@@ -265,5 +268,53 @@ describe("TrackHealth", () => {
     expect(health.observe(sample({ videoId: "v2", inTracklist: false }), 9500).mode).toBe(
       "pending",
     );
+  });
+});
+
+const response = (videoId: string) => ({
+  videoDetails: { videoId, lengthSeconds: "213" },
+  playabilityStatus: { status: "OK" },
+});
+
+describe("requested player responses", () => {
+  it("reads the video IDs a /player or /get_watch body asks for", () => {
+    expect(requestedVideoIds({ videoId: "a", context: {} })).toEqual(["a"]);
+    expect(
+      requestedVideoIds({ playerRequest: { videoId: "b" }, watchNextRequest: { videoId: "b" } }),
+    ).toEqual(["b"]);
+    expect(requestedVideoIds(null)).toEqual([]);
+    expect(requestedVideoIds("")).toEqual([]);
+  });
+
+  it("patches the video in the URL and videos a request named (navigation, up next)", () => {
+    expect(isRequestedResponse(response("main"), [], "main")).toBe(true);
+    expect(isRequestedResponse(response("next"), ["next"], "main")).toBe(true);
+  });
+
+  it("leaves made-up responses (empty request body, random video ID) alone", () => {
+    // Captured on dQw4w9WgXcQ: /player answered `Kymdnr0KGWq` to a request without a body.
+    expect(isRequestedResponse(response("Kymdnr0KGWq"), [], "dQw4w9WgXcQ")).toBe(false);
+    expect(isRequestedResponse(response("ux"), [], "dQw4w9WgXcQ")).toBe(false);
+    expect(isRequestedResponse({ adPlacements: true }, [], "dQw4w9WgXcQ")).toBe(false);
+  });
+});
+
+const gzip = async (text: string) =>
+  new Uint8Array(
+    await new Response(
+      new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer(),
+  );
+
+it("reads a gzipped /get_watch body down to the requested video", async () => {
+  const body = JSON.stringify({ playerRequest: { videoId: "next" }, context: {} });
+  expect(requestedVideoIds(await parseRequestBody(await gzip(body)))).toEqual(["next"]);
+});
+
+describe("parseRequestBody", () => {
+  it("reads a plain body, and nothing from an empty one", async () => {
+    const plain = new TextEncoder().encode(JSON.stringify({ videoId: "a" }));
+    expect(requestedVideoIds(await parseRequestBody(plain))).toEqual(["a"]);
+    expect(await parseRequestBody(new Uint8Array())).toBeNull();
   });
 });
