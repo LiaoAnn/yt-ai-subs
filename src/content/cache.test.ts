@@ -36,6 +36,16 @@ describe("cacheKey", () => {
     ).not.toBe(translated);
     expect(cacheKey("vid", { ...DEFAULT_SETTINGS, debugDryRun: true })).toBe(translated);
   });
+
+  it("keeps lines from a creator track apart from Whisper's", () => {
+    const creator = cacheKey("vid", DEFAULT_SETTINGS, "ja");
+    expect(creator).toBe("cache:vid:creator:ja:openai/gpt-oss-120b:zh-TW");
+    expect(creator).not.toBe(cacheKey("vid", DEFAULT_SETTINGS));
+    // The Whisper model does not shape a creator track's lines.
+    expect(
+      cacheKey("vid", { ...DEFAULT_SETTINGS, whisperModel: "whisper-large-v3-turbo" }, "ja"),
+    ).toBe(creator);
+  });
 });
 
 describe("selectEvictions", () => {
