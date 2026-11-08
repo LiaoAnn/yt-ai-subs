@@ -75,6 +75,13 @@ describe("bestVoicedWindow", () => {
     expect(bestVoicedWindow(voiceFeatures(withBass, RATE))).toBeLessThan(MIN_VOICED_SHARE);
   });
 
+  it("keeps the speech-band rule for older captures without wideShare", () => {
+    const { wideShare: _, ...older } = voiceFeatures(lowVoice(4), RATE);
+    expect(bestVoicedWindow(older)).toBe(0);
+    const { wideShare: __, ...talk } = voiceFeatures(tone(1000, 3), RATE);
+    expect(bestVoicedWindow(talk)).toBeGreaterThan(0.9);
+  });
+
   it("handles audio shorter than the window", () => {
     expect(bestVoicedWindow(voiceFeatures(tone(1000, 1), RATE))).toBeGreaterThan(0.9);
     expect(bestVoicedWindow({ band: [], bandShare: [], flatness: [] })).toBe(0);

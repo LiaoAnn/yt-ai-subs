@@ -641,11 +641,14 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
     message = diag.audioBuffers
       ? "AI 字幕：有找到音訊但沒收到資料"
       : "AI 字幕：找不到音訊，請重新整理頁面";
-  } else if (target && !onScreen && (inFlight(target) || playedLong)) {
+  } else if (target && !onScreen) {
     // A finished chunk under the playhead with no caption: skipped for having no voice, or
-    // Whisper heard nothing there. Not waiting for anything.
-    if (isFinished(target.jobs.values(), t)) message = "AI 字幕：這段沒偵測到人聲";
-    else message = inFlight(target) ? "AI 字幕：聽寫中…" : "AI 字幕：等待音訊…";
+    // Whisper's lines there were all dropped (made up). Not waiting for anything; said only
+    // after a while (like "waiting"), so it does not flash at a start or after a stall.
+    if (isFinished(target.jobs.values(), t)) {
+      if (playedLong) message = "AI 字幕：這段沒有辨識到台詞";
+    } else if (inFlight(target)) message = "AI 字幕：聽寫中…";
+    else if (playedLong) message = "AI 字幕：等待音訊…";
   }
   overlay.setStatus(message);
 }
