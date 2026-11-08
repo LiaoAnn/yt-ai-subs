@@ -6,6 +6,7 @@ import {
   activeEvents,
   isPlayerEndpoint,
   isRequestedResponse,
+  liveStatus,
   parseRequestBody,
   ourTrackVideoId,
   patchPlayerResponse,
@@ -28,6 +29,23 @@ const playable = <T extends Record<string, unknown>>(extra: T = {} as T) => ({
   playabilityStatus: { status: "OK" },
   videoDetails: { videoId: "abc123" },
   ...extra,
+});
+
+describe("live streams", () => {
+  it("are recognised from videoDetails.isLive and get no track", () => {
+    const live = playable({
+      videoDetails: { videoId: "live1", isLive: true, isLiveContent: true },
+    });
+    expect(liveStatus(live)).toEqual({ videoId: "live1", live: true });
+    expect(patchPlayerResponse(live, DEFAULT_TRACK_CONFIG)).toBeNull();
+    expect(live).not.toHaveProperty("captions");
+    // A finished stream (isLiveContent only) is an ordinary video.
+    const vod = playable({ videoDetails: { videoId: "vod1", isLiveContent: true } });
+    expect(liveStatus(vod)).toEqual({ videoId: "vod1", live: false });
+    expect(patchPlayerResponse(vod, DEFAULT_TRACK_CONFIG)).toBe("vod1");
+    expect(liveStatus(null)).toBeNull();
+    expect(liveStatus({ videoDetails: {} })).toBeNull();
+  });
 });
 
 describe("patchPlayerResponse", () => {

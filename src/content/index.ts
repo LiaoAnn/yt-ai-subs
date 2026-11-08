@@ -38,7 +38,7 @@ import {
   buildWhisperPrompt,
   type VideoInfo,
 } from "@/shared/video-context";
-import { videoIdFromUrl } from "@/shared/youtube";
+import { unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
@@ -54,8 +54,10 @@ import { energyEnvelope, findQuietCut, isNearFloor } from "./energy";
 import { Overlay } from "./overlay";
 import {
   DEFAULT_SCHEDULE,
+  forPlaybackRate,
   isFinished,
   isIrrelevant,
+  leadSeconds,
   nextNeeded,
   trimCutSentence,
   type Job,
@@ -353,11 +355,15 @@ window.addEventListener("message", (event) => {
   }
 });
 
+/** Why the current page gets no captions (live stream, Shorts), or "". */
+const unsupported = (videoId: string | null) =>
+  unsupportedReason(location.pathname, captionTrack.isLive(videoId));
+
 function onSegment(message: SegmentMessage) {
   diag.segments++;
   if (diag.segments === 1) console.log(LOG_PREFIX, "receiving audio");
   const videoId = message.videoId ?? videoIdFromUrl(location.href);
-  if (!videoId) return;
+  if (!videoId || unsupported(videoId)) return; // keep no audio that will never be sent
   if (!state || state.videoId !== videoId) {
     if (state) abortAll(state);
     state = newVideoState(videoId);
@@ -787,7 +793,11 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
 }
 
 /** Cancels running jobs a seek made irrelevant. */
-function cancelIrrelevant(target: VideoState, t: number, options = DEFAULT_SCHEDULE) {
+function cancelIrrelevant(
+  target: VideoState,
+  t: number,
+  options: ScheduleOptions = DEFAULT_SCHEDULE,
+) {
   const ids: string[] = [];
   for (const job of target.jobs.values()) {
     if (job.status !== "running" || !job.controller || !isIrrelevant(job, t, options)) continue;
@@ -841,16 +851,16 @@ function scheduleCreator(target: VideoState, v: HTMLVideoElement) {
 
 function schedule(target: VideoState, v: HTMLVideoElement) {
   const t = v.currentTime;
+  const rate = v.playbackRate;
   const duration = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity;
-  cancelIrrelevant(target, t);
-  if (quota.whisper === "out") {
-    diag.reason = "今天的語音辨識額度用完了";
-    target.store.prune(t, (time) => isFinished(target.jobs.values(), time));
-    return;
-  }
   const low = quota.whisper === "low";
   const maxJobs = low ? 1 : MAX_PARALLEL_JOBS;
-  const options = low ? LOW_QUOTA_SCHEDULE : DEFAULT_SCHEDULE;
+  const options = forPlaybackRate(low ? LOW_QUOTA_SCHEDULE : DEFAULT_SCHEDULE, rate);
+  cancelIrrelevant(target, t, options);
+  if (quota.whisper === "out") {
+    diag.reason = "今天的語音辨識額度用完了";
+    return;
+  }
   for (let guard = 0; inFlight(target) < maxJobs && guard < 4; guard++) {
     const next = nextNeeded([...target.jobs.values()], t, duration, Date.now(), options);
     if (!next) {
@@ -889,8 +899,9 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
         .coverage(job.start, job.end)
         .runs.find((run) => run.start <= job.start + 0.3);
       const have = head ? Math.min(head.end, job.end) - job.start : 0;
-      // Short requests cost as much as 10 s ones: only when the playhead is close.
-      const margin = job.start - t;
+      // Short requests cost as much as 10 s ones: only when the playhead is close (in
+      // wall seconds, so a faster rate starts them earlier).
+      const margin = (job.start - t) / Math.max(1, rate);
       if ((margin < 6 && have >= 8) || (margin < 2 && have >= 3)) {
         job.end = Math.round((job.start + have - 0.1) * 100) / 100;
       } else {
@@ -902,7 +913,6 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
     diag.reason = `送出 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒`;
     void runJob(target, job, duration);
   }
-  target.store.prune(t, (time) => isFinished(target.jobs.values(), time));
 }
 
 // ---------- main loop ----------
@@ -920,7 +930,14 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
   const onScreen = target?.cues.some((cue) => cue.start <= t + 1 && cue.end > t - 5) ?? false;
   let message = "";
   const source = target?.source.kind;
-  if (!settings.enabled || isAdShowing() || !settingsLoaded || source === "target") message = "";
+  if (
+    !settings.enabled ||
+    isAdShowing() ||
+    !settingsLoaded ||
+    source === "target" ||
+    unsupported(videoIdFromUrl(location.href)) // live, Shorts: the popup says why
+  )
+    message = "";
   else if (source === "creator" && !settings.translate) message = "";
   else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
   // Before lastError: with Whisper out nothing new comes, whatever the last chunk said
@@ -959,7 +976,20 @@ function tick() {
     diag.reason = pause ?? "還沒收到這支影片的音訊";
     return;
   }
+  // Before any early return: audio piles up while nothing is sent (off, no key). Not during
+  // an ad: the <video> then plays the ad, and its time (from 0) would drop the video's audio.
+  if (v && !isAdShowing()) {
+    target.store.prune(v.currentTime, (time) => isFinished(target.jobs.values(), time));
+  }
   if (!settingsLoaded) return;
+  const reason = unsupported(target.videoId);
+  if (reason) {
+    if (diag.reason !== reason) console.log(LOG_PREFIX, `off for this video: ${reason}`);
+    abortAll(target);
+    target.store.prune(Infinity, () => true);
+    diag.reason = reason;
+    return;
+  }
   if (!settings.enabled) {
     abortAll(target);
     diag.reason = "已關閉";
@@ -1060,6 +1090,12 @@ document.addEventListener(
   true,
 );
 
+/** The renderer's JS heap (Chrome only; shared with the page), for diagnostics. */
+function heapMB(): number | null {
+  const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+  return memory ? Math.round(memory.usedJSHeapSize / 2 ** 20) : null;
+}
+
 let lastDebug = 0;
 function debugLog() {
   if (Date.now() - lastDebug < DEBUG_LOG_MS) return;
@@ -1072,6 +1108,11 @@ function debugLog() {
     "state",
     JSON.stringify({
       t: v ? Number(v.currentTime.toFixed(1)) : null,
+      rate: v?.playbackRate ?? null,
+      lead: target && v ? Number(leadSeconds(target.jobs.values(), v.currentTime).toFixed(1)) : 0,
+      audioKB: target ? Math.round(target.store.byteLength() / 1024) : 0,
+      jobs: target?.jobs.size ?? 0,
+      heapMB: heapMB(),
       segments: diag.segments,
       clusters: target?.store.clusters.size ?? 0,
       audio: target?.store.describe() ?? [],
@@ -1093,9 +1134,13 @@ setInterval(render, RENDER_MS);
 // The popup asks which display mode this tab uses.
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if ((message as { type?: unknown } | null)?.type !== "get-display-mode") return false;
-  const reply: DisplayModeReply = settings.enabled
-    ? displayMode(videoIdFromUrl(location.href))
-    : { videoId: videoIdFromUrl(location.href), mode: "pending", reason: "" };
+  const videoId = videoIdFromUrl(location.href);
+  const off = unsupported(videoId);
+  const reply: DisplayModeReply = !settings.enabled
+    ? { videoId, mode: "pending", reason: "" }
+    : off
+      ? { videoId, mode: "off", reason: off }
+      : displayMode(videoId);
   sendResponse(reply);
   return false;
 });

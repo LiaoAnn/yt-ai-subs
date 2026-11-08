@@ -55,6 +55,8 @@ export interface CaptionModeMessage extends Tagged {
   mode: DisplayMode;
   /** Why the overlay is used; empty otherwise. */
   reason: string;
+  /** The player response says the video is a live stream (no captions for it). */
+  live?: boolean;
 }
 
 /** Title, channel, description and tags of a video, from a player response. */
@@ -160,7 +162,8 @@ export function isPageMessage(data: unknown): data is PageMessage {
       return (
         (message.videoId === null || typeof message.videoId === "string") &&
         DISPLAY_MODES.includes(message.mode) &&
-        typeof message.reason === "string"
+        typeof message.reason === "string" &&
+        (message.live === undefined || typeof message.live === "boolean")
       );
     case "video-info": {
       const info = message.info as Record<string, unknown> | null;
@@ -289,7 +292,8 @@ export interface GetDisplayModeMessage {
 
 export interface DisplayModeReply {
   videoId: string | null;
-  mode: DisplayMode;
+  /** "off": this kind of video gets no captions (live, Shorts); `reason` says which. */
+  mode: DisplayMode | "off";
   reason: string;
 }
 
