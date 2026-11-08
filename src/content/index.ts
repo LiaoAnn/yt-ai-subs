@@ -64,6 +64,7 @@ import {
   type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
+import { schedulingPause } from "./watching";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
@@ -281,6 +282,16 @@ const video = () =>
   document.querySelector<HTMLVideoElement>("#movie_player video") ??
   document.querySelector<HTMLVideoElement>("video");
 const isAdShowing = () => player()?.classList.contains("ad-showing") ?? false;
+/** Why no new chunk may be sent now (an ad, a hidden tab), or null. */
+const pauseReason = () =>
+  schedulingPause({
+    adShowing: isAdShowing(),
+    hidden: document.visibilityState === "hidden",
+    pictureInPicture:
+      document.pictureInPictureElement != null ||
+      (window as { documentPictureInPicture?: { window: Window | null } }).documentPictureInPicture
+        ?.window != null,
+  });
 
 function newVideoState(videoId: string): VideoState {
   return {
@@ -478,6 +489,8 @@ async function translateLines(
   before: JobRecord | undefined,
   label: string,
   signal: AbortSignal,
+  /** False right before sending: send nothing and return false (e.g. the tab was hidden). */
+  maySend: () => boolean = () => true,
 ): Promise<boolean> {
   if (!settings.translate || !fresh.length) {
     target.lastError = "";
@@ -494,6 +507,7 @@ async function translateLines(
     await waitUntil(() => before.status !== "running", CONTEXT_WAIT_MS, signal);
     if (signal.aborted || state !== target) return false;
   }
+  if (!maySend()) return false;
   const lines = fresh.map((cue) => cue.original);
   const context = recentLines(target, Math.min(job.start, fresh[0]!.start)).filter(
     (cue) => !fresh.includes(cue),
@@ -570,7 +584,13 @@ async function runCreatorJob(target: VideoState, job: JobRecord) {
       if (round > 0 && !fresh.length) break;
       job.claimed = fresh;
       const wait = round === 0 ? before : undefined;
-      if (!(await translateLines(target, job, fresh, wait, label, signal))) return;
+      // The chunk's first request: not if an ad started or the tab was hidden meanwhile
+      // (it is scheduled again later). Later rounds finish the chunk.
+      const maySend = () => round > 0 || pauseReason() === null;
+      if (!(await translateLines(target, job, fresh, wait, label, signal, maySend))) {
+        if (!signal.aborted && state === target && !maySend()) target.jobs.delete(job.id);
+        return;
+      }
       if (job.untranslated || !settings.translate) break;
     }
     job.status = "done";
@@ -681,8 +701,9 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       ),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
-    if (quota.whisper === "out") {
-      // The day's budget ran out while this chunk was decoding: send nothing.
+    if (quota.whisper === "out" || pauseReason()) {
+      // The day's budget ran out, an ad started or the tab was hidden while this chunk was
+      // decoding: send nothing (it is scheduled again later).
       target.jobs.delete(job.id);
       return;
     }
@@ -948,8 +969,11 @@ function tick() {
   updateStatus(target, v);
   if (target && settingsLoaded)
     captionTrack.sync(target.videoId, target.cuesVersion, target.cues, settings);
+  // During an ad (a pre-roll comes before any of the video's audio) or in a hidden tab,
+  // say so rather than "no audio yet".
+  const pause = pauseReason();
   if (!target) {
-    diag.reason = "還沒收到這支影片的音訊";
+    diag.reason = pause ?? "還沒收到這支影片的音訊";
     return;
   }
   // Before any early return: audio piles up while nothing is sent (off, no key). Not during
@@ -999,8 +1023,9 @@ function tick() {
     diag.reason = "找不到 video 元素";
     return;
   }
-  if (isAdShowing()) {
-    diag.reason = "廣告中";
+  if (pause) {
+    // Running requests finish; nothing new is sent until the ad ends or the tab is shown.
+    diag.reason = pause;
     return;
   }
   if (needsKey) {
@@ -1050,6 +1075,10 @@ document.addEventListener(
   },
   true,
 );
+document.addEventListener("visibilitychange", () => {
+  console.log(LOG_PREFIX, `tab ${document.visibilityState}`);
+  tick();
+});
 document.addEventListener(
   "seeking",
   (event) => {
