@@ -240,6 +240,20 @@ export function parseTranslatedLines(text: string, count: number): (string | und
   return out.some((line) => line !== undefined) ? out : null;
 }
 
+/** Caption cards ([拍手], (감격), 【…】) and speaker labels (리원 / …, [인모] …, 太郎：…). */
+const CAPTION_NOTE = /[[(（【]|^[^\s/／:：]{1,12}\s*[/／:：]/u;
+
+/**
+ * Extra rule for creator-made lines, which carry caption cards and speaker labels; only
+ * when a line has one, so Whisper's lines do not pay for it.
+ */
+export function captionNotesRule(lines: readonly string[]): string {
+  if (!lines.some((line) => CAPTION_NOTE.test(line))) return "";
+  return `
+- Text in brackets ([…], (…), （…）, 【…】) is a caption card, a sound or a stage note, not speech: translate it inside the same kind of brackets.
+- A speaker label at the start of a line (a name followed by "/", ":" or "：", or a name in brackets) stays at the start, with the name kept as a name; translate only the speech after it.`;
+}
+
 export async function translate(
   limiter: RateLimiter,
   settings: Settings,
@@ -260,7 +274,7 @@ The input is a JSON object of numbered lines, consecutive pieces of speech from 
 - Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout. The video's title and channel help to tell who is speaking and what the names are.
 - Never leave Hangul or Japanese kana in the translation, not even in a name. ${settings.targetLanguage === "en" ? "Romanise Korean and Japanese names (지수 → Jisoo, はると → Haruto)." : "Write Korean and Japanese names in Chinese characters: the person's established Chinese name if there is one, else a usual transliteration (지수 → 智秀, 민준 → 珉俊, はると → 陽翔); leave out honorifics like 님 and さん or translate them."}
 - When a glossary is given, translate each of its terms exactly as it says.
-- Keep a line that is already in the target language.
+- Keep a line that is already in the target language.${captionNotesRule(lines)}
 Reply ONLY with a JSON object with exactly the same numbered keys, plus "terms": {"1": "...", "2": "...", ..., "terms": {...}}.
 "terms" maps each name of a person, group, show or place, and each recurring special term, in these lines (written exactly as in the line, without particles or endings) to how you translated it. Ordinary words are not terms. Use {} when there are none.`;
   const user = translationUserMessage(lines, context, extras);

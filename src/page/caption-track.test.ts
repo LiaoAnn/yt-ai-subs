@@ -98,6 +98,26 @@ describe("timedtext URLs", () => {
     expect(ourTrackVideoId("not a url ::")).toBeNull();
   });
 
+  it("copies a real track's parameters, so the player adds its pot token to ours", () => {
+    const real =
+      "https://www.youtube.com/api/timedtext?v=abc123&ei=x&caps=asr&opi=1&exp=xpe&expire=9&sparams=ip,ipbits,expire,v,caps,opi,exp&signature=s&key=yt8&kind=asr&lang=ja&name=n&fmt=srv3";
+    const url = new URL(trackBaseUrl("abc123", "zh-TW", real));
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      v: "abc123",
+      lang: "zh-TW",
+      ytaisubs: "1",
+      exp: "xpe",
+      signature: "s",
+      sparams: "ip,ipbits,expire,v,caps,opi,exp",
+    });
+    for (const name of ["kind", "name", "fmt"]) expect(url.searchParams.has(name)).toBe(false);
+    expect(ourTrackVideoId(url.href)).toBe("abc123");
+    // A template from anywhere else is ignored.
+    expect(trackBaseUrl("abc123", "zh-TW", "https://evil.example/api/timedtext?x=1")).toBe(
+      trackBaseUrl("abc123", "zh-TW"),
+    );
+  });
+
   it("knows which youtubei endpoints carry a player response", () => {
     expect(isPlayerEndpoint("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")).toBe(
       true,

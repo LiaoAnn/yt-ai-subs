@@ -53,14 +53,21 @@ async function listKeys(storage: CacheStorage): Promise<string[]> {
 
 const local = (): CacheStorage => chrome.storage.local;
 
-/** One cache entry per video and per setting that changes the captions. */
-export function cacheKey(videoId: string, settings: Settings): string {
+/**
+ * One cache entry per video and per setting that changes the captions. With
+ * `creatorLanguage`, the lines come from the creator's own track in that language instead
+ * of Whisper (only the translation is cached work).
+ */
+export function cacheKey(videoId: string, settings: Settings, creatorLanguage?: string): string {
   const translation = settings.translate
     ? `${settings.translationModel}:${settings.targetLanguage}`
     : "none";
   // A dry run (development) produces no captions: keep it apart from the real entry.
   const dry = settings.debugCapture && settings.debugDryRun ? ":dry-run" : "";
-  return `${CACHE_PREFIX}${videoId}:${settings.whisperModel}:${settings.sourceLanguage}:${translation}${dry}`;
+  const lines = creatorLanguage
+    ? `creator:${creatorLanguage}`
+    : `${settings.whisperModel}:${settings.sourceLanguage}`;
+  return `${CACHE_PREFIX}${videoId}:${lines}:${translation}${dry}`;
 }
 
 export function isExpired(entry: Pick<CacheEntry, "savedAt">, now: number): boolean {

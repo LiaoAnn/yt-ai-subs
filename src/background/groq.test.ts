@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "@/shared/settings";
 import { emptyLedger, quotaFor, recordUsage } from "@/shared/quota";
 import {
+  captionNotesRule,
   estimateChatTokens,
   numberLines,
   parseTranslatedLines,
@@ -154,5 +155,15 @@ describe("Whisper prompt cap", () => {
     );
     expect(prompt.startsWith("Some Show. Chan.")).toBe(true);
     expect(prompt.length).toBeLessThanOrEqual(WHISPER_PROMPT_CHARS);
+  });
+});
+
+describe("captionNotesRule", () => {
+  it("is added only for lines with caption cards or speaker labels", () => {
+    expect(captionNotesRule(["今日はいい天気ですね", "そうですね"])).toBe("");
+    expect(captionNotesRule(["[拍手]"])).toContain("brackets");
+    expect(captionNotesRule(["(감격)"])).toContain("brackets");
+    expect(captionNotesRule(["리원 / 안녕하세요"])).toContain("speaker label");
+    expect(captionNotesRule(["太郎：おはよう"])).toContain("speaker label");
   });
 });

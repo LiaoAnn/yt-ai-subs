@@ -13,6 +13,14 @@ import {
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import {
+  creatorMessage,
+  creatorTick,
+  installCreatorCaptions,
+  noteResponse,
+  noteTimedtextUrl,
+  targetFor,
+} from "./creator-hooks";
+import {
   TrackHealth,
   activeEvents,
   isOurVssId,
@@ -116,7 +124,10 @@ function noteVideoInfo(response: unknown) {
 function patch(response: unknown): boolean {
   noteVideoInfo(response);
   try {
-    const videoId = patchPlayerResponse(response, readConfig());
+    const config = readConfig();
+    // The creator's own track in our language replaces ours (creator-hooks.ts).
+    if (noteResponse(response, config)) return false;
+    const videoId = patchPlayerResponse(response, config);
     if (videoId) console.log(LOG_PREFIX, "caption track added to the player response", videoId);
     return videoId !== null;
   } catch (error) {
@@ -171,6 +182,7 @@ function hookFetch() {
     } catch {
       // fall through to the real fetch
     }
+    if (url) noteTimedtextUrl(url);
     const videoId = url ? ourTrackVideoId(url) : null;
     if (videoId) {
       return new Response(serve(videoId), {
@@ -251,6 +263,7 @@ function hookXhr() {
   proto.open = function (this: FakeXhr, ...args: [string, string | URL, ...unknown[]]) {
     let videoId: string | null = null;
     try {
+      noteTimedtextUrl(String(args[1]));
       videoId = ourTrackVideoId(String(args[1]));
     } catch {
       videoId = null;
@@ -277,6 +290,10 @@ function listenForCues() {
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     if (!isPageCommand(event.data)) return;
+    if (event.data.type === "get-creator-captions") {
+      window.postMessage(creatorMessage(event.data.videoId), location.origin);
+      return;
+    }
     const track = trackFor(event.data.videoId);
     track.events = event.data.events;
     track.version++;
@@ -325,6 +342,8 @@ function control() {
 
     const config = readConfig();
     const track = videoId ? trackFor(videoId) : null;
+    if (config.enabled) creatorTick(player, videoId, adShowing, CONTROL_MS);
+    const creatorTarget = targetFor(videoId);
 
     // Never select the track for a video that already fell back to the overlay (the track
     // can show up late): the captions would be shown twice.
@@ -389,9 +408,11 @@ function control() {
       expected: track && selected ? activeEvents(track.served, t) : [],
       shown,
     };
-    const verdict = config.enabled
-      ? health.observe(sample, Date.now())
-      : { mode: "overlay" as DisplayMode, reason: "AI 字幕已關閉" };
+    const verdict: { mode: DisplayMode; reason: string } = !config.enabled
+      ? { mode: "overlay", reason: "AI 字幕已關閉" }
+      : creatorTarget
+        ? { mode: "creator", reason: creatorTarget.name || creatorTarget.languageCode }
+        : health.observe(sample, Date.now());
     if (Date.now() - lastDebug >= DEBUG_LOG_MS && videoId) {
       lastDebug = Date.now();
       console.log(
@@ -434,6 +455,7 @@ function control() {
 }
 
 export function installCaptionTrack() {
+  installCreatorCaptions();
   hookInitialPlayerResponse();
   hookFetch();
   hookXhr();

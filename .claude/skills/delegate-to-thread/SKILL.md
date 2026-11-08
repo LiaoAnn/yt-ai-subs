@@ -34,7 +34,8 @@ Start the brief with "Reply in Traditional Chinese (Taiwan)" when the user reads
 ## Follow up
 
 - Do not block on a thread (`t3_thread_wait`, sleeps, loops). End the turn; the thread's `t3_thread_send` report wakes the supervisor.
-- When a thread asks for something only the user can decide (reading another worktree, more budget, a product choice), ask the user, then answer the thread with `t3_thread_send` (`mode: "auto"`, a new `clientRequestId`).
+- Delegated threads send every question to the supervisor instead of prompting the user (`run-delegated-task`). Answer from what you already know when you can (earlier decisions, where things are, approvals already given); ask the user only what only they can decide (reading another worktree, more budget, a product choice, a secret not yet supplied). Then answer the thread with `t3_thread_send` (`mode: "auto"`, a new `clientRequestId`). When a question shows the repo is missing something every thread needs (like where the test key lives), add it to `AGENTS.md` or a skill too.
+- If a delegated thread prompts the user directly anyway, tell the user to decline it, answer the thread yourself, and remind it of the rule.
 - Read the report critically before relaying it: check numbers against each other, and look at the diff or the git log yourself (`git -C <main> log main..<branch>`). Relay to the user what changed, the evidence, what is still unverified, and the decisions they need to make.
 - A worker's thread settles itself when its PR merges; a researcher settles itself after reporting. Settle any thread left over with `t3_thread_organize` (`action: "settle"`), including the Codex review child threads; settling stops the worktree's stack and keeps its data.
 - After a worker's PR merges, update the main checkout: `git -C <main> pull --ff-only origin main`.

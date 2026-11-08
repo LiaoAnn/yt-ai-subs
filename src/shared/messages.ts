@@ -42,8 +42,11 @@ export interface SegmentMessage extends Tagged {
   bytes: ArrayBuffer;
 }
 
-/** How captions are shown for a video: YouTube's own CC menu, or the fallback overlay. */
-export type DisplayMode = "pending" | "cc" | "overlay";
+/**
+ * How captions are shown for a video: YouTube's own CC menu, the fallback overlay, or the
+ * creator's own track in the target language (nothing of ours is shown or paid for).
+ */
+export type DisplayMode = "pending" | "cc" | "overlay" | "creator";
 
 /** The page script's verdict on the CC-menu track for the player's current video. */
 export interface CaptionModeMessage extends Tagged {
@@ -60,17 +63,75 @@ export interface VideoInfoMessage extends Tagged {
   info: VideoInfo;
 }
 
+/**
+ * What the page script knows about the creator's own caption tracks for a video
+ * (src/page/creator-hooks.ts), in reply to a GetCreatorCaptionsCommand:
+ * - "unknown": no player response for the video seen yet;
+ * - "none": no creator track worth using (transcribe with Whisper);
+ * - "target": a creator track in our track's language; the page script selects it and
+ *   adds no track of ours: transcribe and translate nothing;
+ * - "pending": a creator track in the spoken language is being fetched;
+ * - "fetched": it and YouTube's automatic track of that language (null if there is none);
+ *   the content script decides whether it replaces Whisper (analyzeCreatorTrack);
+ * - "failed": it could not be fetched (transcribe with Whisper).
+ */
+export type CreatorStatus = "unknown" | "none" | "target" | "pending" | "fetched" | "failed";
+
+export interface CreatorCaptionsMessage extends Tagged {
+  type: "creator-captions";
+  videoId: string;
+  status: CreatorStatus;
+  /** The creator track's language and name ("target", "pending", "fetched"). */
+  languageCode?: string;
+  name?: string;
+  creator?: Json3Event[];
+  asr?: Json3Event[] | null;
+  /** Why it failed. */
+  reason?: string;
+}
+
 export type PageMessage =
   | PageReadyMessage
   | AudioBufferMessage
   | SegmentMessage
   | CaptionModeMessage
-  | VideoInfoMessage;
+  | VideoInfoMessage
+  | CreatorCaptionsMessage;
 
-const DISPLAY_MODES: readonly unknown[] = ["pending", "cc", "overlay"] satisfies DisplayMode[];
+const DISPLAY_MODES: readonly unknown[] = [
+  "pending",
+  "cc",
+  "overlay",
+  "creator",
+] satisfies DisplayMode[];
+const CREATOR_STATUSES: readonly unknown[] = [
+  "unknown",
+  "none",
+  "target",
+  "pending",
+  "fetched",
+  "failed",
+] satisfies CreatorStatus[];
+const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
 
 const isNumberOrNull = (value: unknown) =>
   value === null || (typeof value === "number" && Number.isFinite(value));
+
+const isJson3Event = (value: unknown): value is Json3Event => {
+  if (typeof value !== "object" || value === null) return false;
+  const event = value as Record<string, unknown>;
+  return (
+    Number.isFinite(event.tStartMs) &&
+    Number.isFinite(event.dDurationMs) &&
+    Array.isArray(event.segs) &&
+    event.segs.every(
+      (seg: unknown) =>
+        typeof seg === "object" &&
+        seg !== null &&
+        typeof (seg as Record<string, unknown>).utf8 === "string",
+    )
+  );
+};
 
 /**
  * Checks the shape of a window message. Any script on the page can post one that passes,
@@ -114,6 +175,19 @@ export function isPageMessage(data: unknown): data is PageMessage {
         info.keywords.every((k) => typeof k === "string")
       );
     }
+    case "creator-captions":
+      return (
+        typeof message.videoId === "string" &&
+        CREATOR_STATUSES.includes(message.status) &&
+        isOptionalString(message.languageCode) &&
+        isOptionalString(message.name) &&
+        isOptionalString(message.reason) &&
+        (message.creator === undefined ||
+          (Array.isArray(message.creator) && message.creator.every(isJson3Event))) &&
+        (message.asr === undefined ||
+          message.asr === null ||
+          (Array.isArray(message.asr) && message.asr.every(isJson3Event)))
+      );
     default:
       return false;
   }
@@ -130,30 +204,22 @@ export interface TrackCuesCommand {
   events: Json3Event[];
 }
 
-export type PageCommand = TrackCuesCommand;
+/** Asks the page script what it knows about the video's creator tracks. */
+export interface GetCreatorCaptionsCommand {
+  [PAGE_COMMAND_TAG]: true;
+  type: "get-creator-captions";
+  videoId: string;
+}
 
-const isJson3Event = (value: unknown): value is Json3Event => {
-  if (typeof value !== "object" || value === null) return false;
-  const event = value as Record<string, unknown>;
-  return (
-    Number.isFinite(event.tStartMs) &&
-    Number.isFinite(event.dDurationMs) &&
-    Array.isArray(event.segs) &&
-    event.segs.every(
-      (seg: unknown) =>
-        typeof seg === "object" &&
-        seg !== null &&
-        typeof (seg as Record<string, unknown>).utf8 === "string",
-    )
-  );
-};
+export type PageCommand = TrackCuesCommand | GetCreatorCaptionsCommand;
 
 /** Checks the shape of a content → page command (any page script can forge one). */
 export function isPageCommand(data: unknown): data is PageCommand {
   if (typeof data !== "object" || data === null) return false;
   const message = data as Record<string, unknown>;
+  if (message[PAGE_COMMAND_TAG] !== true || typeof message.videoId !== "string") return false;
+  if (message.type === "get-creator-captions") return true;
   return (
-    message[PAGE_COMMAND_TAG] === true &&
     message.type === "track-cues" &&
     typeof message.videoId === "string" &&
     Array.isArray(message.events) &&

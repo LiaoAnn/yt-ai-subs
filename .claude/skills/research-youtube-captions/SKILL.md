@@ -21,6 +21,8 @@ Do not say a channel "has Japanese captions" from memory or from what a viewer s
 
 - The player loads tracks with an XHR to `/api/timedtext?…&fmt=json3…` that carries a `pot` token; a bare `baseUrl` may come back empty. Select a track in the player, take the URL of the request it sends, then change `lang=` and `kind=` to fetch the other tracks.
 - During an ad the player sends no timedtext request: skip the ad first.
+- One `pot` works for every track of the same video (Il3rOIG-6pg: a.ja, .ko and .zh-Hant all came back with it, all empty without). Copy the player's parameters onto the other track's own baseUrl, but not `variant`: the player adds `variant=timing-optimized` to some requests, and a creator track then comes back empty (0Fk2MSLtrs0: 0 bytes with it, 38,804 without).
+- The player's first request for a track can go out without `pot` (0Fk2MSLtrs0, 1 of 2 loads); `movie_player.setOption("captions", "reload", true)` makes it ask again, with the token. The extension does this itself (`src/page/creator-hooks.ts`).
 - json3: `events[].tStartMs`, `dDurationMs`, `segs[].utf8`; automatic tracks also have `segs[].tOffsetMs` (word times).
 
 ## Measure

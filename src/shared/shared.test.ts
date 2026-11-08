@@ -46,11 +46,15 @@ describe("track config", () => {
       enabled: true,
       label: "AI 繁中",
       languageCode: "zh-TW",
+      translate: true,
+      sourceLanguage: "ja",
     });
     expect(trackConfigFromSettings({ ...DEFAULT_SETTINGS, translate: false })).toEqual({
       enabled: true,
       label: "AI 原文",
       languageCode: "ja",
+      translate: false,
+      sourceLanguage: "ja",
     });
     expect(
       trackConfigFromSettings({ ...DEFAULT_SETTINGS, translate: false, sourceLanguage: "auto" })
@@ -59,13 +63,25 @@ describe("track config", () => {
   });
 
   it("round-trips through localStorage text and survives garbage", () => {
-    const config = { enabled: false, label: "AI 英文", languageCode: "en" };
+    const config = {
+      enabled: false,
+      label: "AI 英文",
+      languageCode: "en",
+      translate: true,
+      sourceLanguage: "auto",
+    };
     expect(parseTrackConfig(JSON.stringify(config))).toEqual(config);
     expect(parseTrackConfig(null)).toEqual(DEFAULT_TRACK_CONFIG);
     expect(parseTrackConfig("{oops")).toEqual(DEFAULT_TRACK_CONFIG);
-    expect(parseTrackConfig(JSON.stringify({ enabled: "yes", languageCode: "<b>" }))).toEqual(
-      DEFAULT_TRACK_CONFIG,
-    );
+    expect(
+      parseTrackConfig(
+        JSON.stringify({ enabled: "yes", languageCode: "<b>", sourceLanguage: "<i>" }),
+      ),
+    ).toEqual(DEFAULT_TRACK_CONFIG);
+    // Stored by an older version (no translate / sourceLanguage): the defaults fill in.
+    expect(
+      parseTrackConfig(JSON.stringify({ enabled: true, label: "AI 繁中", languageCode: "zh-TW" })),
+    ).toEqual(DEFAULT_TRACK_CONFIG);
   });
 });
 
