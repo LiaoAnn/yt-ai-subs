@@ -2,6 +2,7 @@
 // through the shared rate limiter. Never log the API key or request headers.
 
 import type { Cue } from "@/shared/captions";
+import { parseReplyTerms } from "@/shared/glossary";
 import { LOG_PREFIX } from "@/shared/log";
 import type { Settings } from "@/shared/settings";
 import { TARGET_LANGUAGES } from "@/shared/settings";
@@ -18,8 +19,11 @@ const TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 /** Retries after a 429, each one waiting for retry-after first. */
 const MAX_429_RETRIES = 2;
-/** Whisper's prompt is limited to 224 tokens; a short tail of context is plenty. */
-const WHISPER_PROMPT_CHARS = 200;
+/**
+ * Whisper reads at most 224 prompt tokens; the content script builds a prompt that fits
+ * (buildWhisperPrompt). This only caps what a message can make us send.
+ */
+const WHISPER_PROMPT_CHARS = 400;
 const MAX_COMPLETION_TOKENS = 2048;
 
 export class GroqError extends Error {
@@ -143,7 +147,44 @@ export async function transcribe(
 export interface TranslateResult {
   lines: string[];
   totalTokens: number;
+  /** Names and terms the model says it translated (source -> translation), unchecked. */
+  terms: Record<string, unknown>;
   stats: CallStats;
+}
+
+export interface TranslateExtras {
+  /** The video's title and channel. */
+  video?: { title: string; channel: string };
+  /** Renderings already used in this video: (source, translation). */
+  glossary?: readonly (readonly [string, string])[];
+}
+
+const oneLine = (text: string, max: number) => text.replace(/\s+/g, " ").trim().slice(0, max);
+
+/** The user message: video, glossary, context, then the numbered lines. */
+export function translationUserMessage(
+  lines: readonly string[],
+  context: string,
+  extras: TranslateExtras = {},
+): string {
+  const parts: string[] = [];
+  const title = oneLine(extras.video?.title ?? "", 150);
+  const channel = oneLine(extras.video?.channel ?? "", 80);
+  if (title || channel) {
+    parts.push(
+      `Video: ${[title && `"${title}"`, channel && `channel ${channel}`].filter(Boolean).join(", ")}`,
+    );
+  }
+  const glossary = (extras.glossary ?? []).filter(([a, b]) => a.trim() && b.trim()).slice(0, 30);
+  if (glossary.length) {
+    parts.push(
+      `Glossary (renderings already used in this video; use them again):\n` +
+        glossary.map(([a, b]) => `${oneLine(a, 30)} → ${oneLine(b, 30)}`).join("\n"),
+    );
+  }
+  if (context) parts.push(`Previous lines (original → translation), for context only:\n${context}`);
+  parts.push(`Lines to translate (${lines.length}):\n${JSON.stringify(numberLines(lines))}`);
+  return parts.join("\n\n");
 }
 
 function targetLanguageName(settings: Settings): string {
@@ -205,6 +246,7 @@ export async function translate(
   signal: AbortSignal,
   onLimiterChange: () => void,
   onBilled: (cost: Cost) => void = () => {},
+  extras: TranslateExtras = {},
 ): Promise<TranslateResult> {
   const system = `You are a professional subtitle translator. Translate subtitle lines into ${targetLanguageName(settings)}.
 The input is a JSON object of numbered lines, consecutive pieces of speech from a video.
@@ -213,12 +255,12 @@ The input is a JSON object of numbered lines, consecutive pieces of speech from 
 - Every key's value translates that same key's line and nothing else: never move words to another key, never merge, skip or split lines, even when lines repeat.
 - Translate idioms and slang by meaning, not word for word.
 - Write natural, concise subtitles in the spoken style of the target language${settings.targetLanguage === "zh-TW" ? " as used in Taiwan (Taiwanese vocabulary, no Mainland terms)" : ""}. Leave out pure fillers (えっと, あの, まあ, 그, 뭐, um); a line that is only a filler gets a short natural interjection.
-- Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout.
+- Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout. The video's title and channel help to tell who is speaking and what the names are.
+- When a glossary is given, translate each of its terms exactly as it says.
 - Keep a line that is already in the target language.
-Reply ONLY with a JSON object with exactly the same keys: {"1": "...", "2": "...", ...}`;
-  const user =
-    (context ? `Previous lines (original → translation), for context only:\n${context}\n\n` : "") +
-    `Lines to translate (${lines.length}):\n${JSON.stringify(numberLines(lines))}`;
+Reply ONLY with a JSON object with exactly the same numbered keys, plus "terms": {"1": "...", "2": "...", ..., "terms": {...}}.
+"terms" maps each name of a person, group, show or place, and each recurring special term, in these lines (written exactly as in the line, without particles or endings) to how you translated it. Ordinary words are not terms. Use {} when there are none.`;
+  const user = translationUserMessage(lines, context, extras);
   const estimate = estimateChatTokens(system.length + user.length, lines.length);
   const { response, entryId, stats } = await limitedFetch(
     limiter,
@@ -261,11 +303,13 @@ Reply ONLY with a JSON object with exactly the same keys: {"1": "...", "2": "...
     LOG_PREFIX,
     `translation: ${lines.length} lines, ${totalTokens} tokens, ${stats.latencyMs} ms`,
   );
-  const translated = parseTranslatedLines(json.choices?.[0]?.message?.content ?? "", lines.length);
+  const content = json.choices?.[0]?.message?.content ?? "";
+  const translated = parseTranslatedLines(content, lines.length);
   if (!translated) throw new GroqError("翻譯格式看不懂");
   return {
     lines: lines.map((line, i) => translated[i] ?? line),
     totalTokens,
+    terms: parseReplyTerms(content) ?? {},
     stats,
   };
 }

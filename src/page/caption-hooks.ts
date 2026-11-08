@@ -11,6 +11,7 @@ import {
   type DisplayMode,
 } from "@/shared/messages";
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
+import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import {
   TrackHealth,
   activeEvents,
@@ -91,8 +92,29 @@ function readConfig() {
   }
 }
 
+/** Title, channel, description and tags per video, from the player responses seen. */
+const videoInfos = new Map<string, VideoInfo>();
+
+function postVideoInfo(info: VideoInfo) {
+  window.postMessage({ [PAGE_MESSAGE_TAG]: true, type: "video-info", info }, location.origin);
+}
+
+/** Keeps the video's info and hands it to the content script (Whisper's prompt). */
+function noteVideoInfo(response: unknown) {
+  try {
+    const info = videoInfoFrom(response);
+    if (!info) return;
+    videoInfos.set(info.videoId, info);
+    while (videoInfos.size > MAX_VIDEOS) videoInfos.delete(videoInfos.keys().next().value!);
+    postVideoInfo(info);
+  } catch (error) {
+    console.warn(LOG_PREFIX, "could not read the video's details", error);
+  }
+}
+
 /** Adds our track to a player response; true if it changed it. */
 function patch(response: unknown): boolean {
+  noteVideoInfo(response);
   try {
     const videoId = patchPlayerResponse(response, readConfig());
     if (videoId) console.log(LOG_PREFIX, "caption track added to the player response", videoId);
@@ -405,6 +427,8 @@ function control() {
         }
       }
       post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason });
+      const info = videoId ? videoInfos.get(videoId) : undefined;
+      if (info) postVideoInfo(info);
     }
   }, CONTROL_MS);
 }

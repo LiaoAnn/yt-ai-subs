@@ -108,6 +108,15 @@ describe("isPageMessage", () => {
     ).toBe(false);
     expect(isPageMessage(null)).toBe(false);
   });
+
+  it("checks video info", () => {
+    const info = { videoId: "a", title: "t", channel: "c", description: "d", keywords: ["k"] };
+    const message = { [PAGE_MESSAGE_TAG]: true, type: "video-info", info };
+    expect(isPageMessage(message)).toBe(true);
+    expect(isPageMessage({ ...message, info: { ...info, keywords: [1] } })).toBe(false);
+    expect(isPageMessage({ ...message, info: { ...info, title: null } })).toBe(false);
+    expect(isPageMessage({ ...message, info: null })).toBe(false);
+  });
 });
 
 describe("isPageCommand", () => {

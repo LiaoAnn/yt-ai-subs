@@ -2,6 +2,7 @@
 // page script copies, decides which chunk to transcribe next (a little ahead of the
 // playhead), sends it to the background, and draws the captions.
 import type { Cue } from "@/shared/captions";
+import { mergeTerms, parseGlossary, relevantTerms, type Glossary } from "@/shared/glossary";
 import { LOG_PREFIX } from "@/shared/log";
 import {
   isPageMessage,
@@ -20,6 +21,13 @@ import {
   withDefaults,
   type Settings,
 } from "@/shared/settings";
+import {
+  MAX_DESCRIPTION_CHARS,
+  MAX_KEYWORDS,
+  MAX_TITLE_CHARS,
+  buildWhisperPrompt,
+  type VideoInfo,
+} from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
@@ -108,6 +116,8 @@ interface VideoState {
   cues: Cue[];
   /** Bumped on every change to `cues` or their text; the CC track resends on a change. */
   cuesVersion: number;
+  /** First translation of each name or term, reused by later chunks (and cached). */
+  glossary: Glossary;
   lastError: string;
 }
 
@@ -176,8 +186,30 @@ function newVideoState(videoId: string): VideoState {
     jobs: new Map(),
     cues: [],
     cuesVersion: 0,
+    glossary: {},
     lastError: "",
   };
+}
+
+/** Title, channel, description and tags of the last few videos (from the page script). */
+const videoInfos = new Map<string, VideoInfo>();
+const MAX_VIDEO_INFOS = 4;
+
+function onVideoInfo(info: VideoInfo) {
+  // From the page: untrusted, so cap what is kept.
+  const capped: VideoInfo = {
+    videoId: info.videoId,
+    title: info.title.slice(0, MAX_TITLE_CHARS),
+    channel: info.channel.slice(0, MAX_TITLE_CHARS),
+    description: info.description.slice(0, MAX_DESCRIPTION_CHARS),
+    keywords: info.keywords.slice(0, MAX_KEYWORDS).map((k) => k.slice(0, 100)),
+  };
+  if (!videoInfos.has(info.videoId)) {
+    console.log(LOG_PREFIX, "video info:", info.videoId, JSON.stringify(capped.title));
+  }
+  videoInfos.delete(info.videoId);
+  videoInfos.set(info.videoId, capped);
+  while (videoInfos.size > MAX_VIDEO_INFOS) videoInfos.delete(videoInfos.keys().next().value!);
 }
 
 // ---------- audio from the page script ----------
@@ -191,6 +223,8 @@ window.addEventListener("message", (event) => {
     console.log(LOG_PREFIX, "content script got page message: page-ready");
   } else if (message.type === "caption-mode") {
     captionTrack.onVerdict(message);
+  } else if (message.type === "video-info") {
+    onVideoInfo(message.info);
   } else if (message.type === "audio-buffer") {
     diag.audioBuffers++;
     console.log(LOG_PREFIX, "audio SourceBuffer:", message.mime);
@@ -250,6 +284,7 @@ function syncCacheKey(target: VideoState) {
   target.cacheLoaded = false;
   target.jobs.clear();
   setCues(target, []);
+  target.glossary = {};
   target.lastError = "";
   overlay.clear();
   loadCache(key).then(
@@ -270,6 +305,8 @@ function syncCacheKey(target: VideoState) {
           });
         }
         target.cues.push(...entry.cues);
+        // Entries found meanwhile were found later in the video: the cached ones came first.
+        target.glossary = { ...parseGlossary(entry.glossary), ...target.glossary };
         setCues(
           target,
           target.cues.toSorted((a, b) => a.start - b.start),
@@ -297,6 +334,7 @@ function persist(target: VideoState) {
   saveCache(target.cacheKey, {
     chunks: done.filter((job) => !job.untranslated).map(({ start, end }) => ({ start, end })),
     cues: target.cues.filter((cue) => !inSkipped(cue)),
+    glossary: target.glossary,
     savedAt: Date.now(),
   }).catch((error: unknown) => console.warn(LOG_PREFIX, "could not save the cache", error));
 }
@@ -385,13 +423,18 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       );
     }
     const previous = recentLines(target, job.start);
+    const info = videoInfos.get(target.videoId);
     const asrRequest: RuntimeMessage = {
       type: "transcribe",
       requestId: asrId!,
       videoId: target.videoId,
       wavBase64: bytesToBase64(audio.wav),
       durationSeconds: audio.duration,
-      context: previous.map((cue) => cue.original).join(" "),
+      context: buildWhisperPrompt(
+        info,
+        previous.map((cue) => cue.original).join(" "),
+        settings.sourceLanguage,
+      ),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
     if (quota.whisper === "out") {
@@ -445,6 +488,8 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       target.cues.toSorted((a, b) => a.start - b.start),
     );
     job.transcribed = true;
+    let sentGlossary: [string, string][] = [];
+    let replyTerms: Record<string, unknown> | undefined;
 
     if (settings.translate && fresh.length && translationPaused(quota)) {
       // Keep the rest of the day's budget for the original captions.
@@ -467,15 +512,20 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
           return;
         }
       }
+      const lines = fresh.map((cue) => cue.original);
+      const context = recentLines(target, job.start);
       const trRequest: RuntimeMessage = {
         type: "translate",
         requestId: trId!,
         videoId: target.videoId,
-        lines: fresh.map((cue) => cue.original),
-        context: recentLines(target, job.start)
+        lines,
+        context: context
           .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
           .join("\n"),
+        ...(info ? { video: { title: info.title, channel: info.channel } } : {}),
+        glossary: relevantTerms(target.glossary, [...lines, ...context.map((cue) => cue.original)]),
       };
+      sentGlossary = trRequest.glossary ?? [];
       const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
       if (signal.aborted || state !== target) {
         setCues(
@@ -493,9 +543,18 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         });
         target.cuesVersion++;
         target.lastError = "";
+        replyTerms = tr.terms;
+        const added = mergeTerms(target.glossary, tr.terms, lines);
+        if (added.length) {
+          console.log(
+            LOG_PREFIX,
+            `glossary +${added.length}: ${added.map(([a, b]) => `${a}→${b}`).join(", ")}`,
+          );
+        }
         console.log(
           LOG_PREFIX,
           `translation ${label}: ${fresh.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
+            `, glossary ${trRequest.glossary?.length ?? 0}` +
             (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
         );
       } else {
@@ -519,6 +578,8 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         envelope: energyEnvelope(audio.samples, WAV_SAMPLE_RATE),
         voice,
         cues: fresh,
+        ...(sentGlossary.length ? { glossary: sentGlossary } : {}),
+        ...(replyTerms ? { terms: replyTerms } : {}),
       });
     }
   } catch (error) {
