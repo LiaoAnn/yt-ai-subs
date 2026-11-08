@@ -8,6 +8,7 @@
 // savedAt, so no entry is ever left behind.
 
 import type { Cue } from "@/shared/captions";
+import type { Glossary } from "@/shared/glossary";
 import type { Settings } from "@/shared/settings";
 
 export interface CachedChunk {
@@ -18,6 +19,8 @@ export interface CachedChunk {
 export interface CacheEntry {
   chunks: CachedChunk[];
   cues: Cue[];
+  /** The video's translation glossary (missing in entries from older versions). */
+  glossary?: Glossary;
   savedAt: number;
 }
 

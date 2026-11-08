@@ -2,6 +2,13 @@
 // page script copies, decides which chunk to transcribe next (a little ahead of the
 // playhead), sends it to the background, and draws the captions.
 import type { Cue } from "@/shared/captions";
+import {
+  applyGlossary,
+  mergeTerms,
+  parseGlossary,
+  relevantTerms,
+  type Glossary,
+} from "@/shared/glossary";
 import { LOG_PREFIX } from "@/shared/log";
 import {
   PAGE_COMMAND_TAG,
@@ -13,6 +20,7 @@ import {
   type RuntimeMessage,
   type SegmentMessage,
   type TranscribeReply,
+  type TranslateMessage,
   type TranslateReply,
 } from "@/shared/messages";
 import { TRANSLATION_PAUSED_MESSAGE, translationPaused, type QuotaLevels } from "@/shared/quota";
@@ -23,6 +31,13 @@ import {
   withDefaults,
   type Settings,
 } from "@/shared/settings";
+import {
+  MAX_DESCRIPTION_CHARS,
+  MAX_KEYWORDS,
+  MAX_TITLE_CHARS,
+  buildWhisperPrompt,
+  type VideoInfo,
+} from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
@@ -117,6 +132,9 @@ interface JobRecord extends Job {
   untranslated: boolean;
   /** Its original lines are in (the next chunk can use them as Whisper's prompt). */
   transcribed?: boolean;
+  /** Glossary entries sent with its translation, and the terms the reply reported (debug). */
+  sentGlossary?: [string, string][];
+  replyTerms?: Record<string, unknown>;
   /** Creator-track lines this job translates (no other job takes them meanwhile). */
   claimed?: Cue[];
 }
@@ -132,6 +150,8 @@ interface VideoState {
   cues: Cue[];
   /** Bumped on every change to `cues` or their text; the CC track resends on a change. */
   cuesVersion: number;
+  /** First translation of each name or term, reused by later chunks (and cached). */
+  glossary: Glossary;
   lastError: string;
   /** Where the lines come from: decided per video and settings (creator-source.ts). */
   source: CaptionSource;
@@ -269,11 +289,33 @@ function newVideoState(videoId: string): VideoState {
     jobs: new Map(),
     cues: [],
     cuesVersion: 0,
+    glossary: {},
     lastError: "",
     source: { kind: "deciding" },
     sourceKey: "",
     decidingMs: 0,
   };
+}
+
+/** Title, channel, description and tags of the last few videos (from the page script). */
+const videoInfos = new Map<string, VideoInfo>();
+const MAX_VIDEO_INFOS = 4;
+
+function onVideoInfo(info: VideoInfo) {
+  // From the page: untrusted, so cap what is kept.
+  const capped: VideoInfo = {
+    videoId: info.videoId,
+    title: info.title.slice(0, MAX_TITLE_CHARS),
+    channel: info.channel.slice(0, MAX_TITLE_CHARS),
+    description: info.description.slice(0, MAX_DESCRIPTION_CHARS),
+    keywords: info.keywords.slice(0, MAX_KEYWORDS).map((k) => k.slice(0, 100)),
+  };
+  if (!videoInfos.has(info.videoId)) {
+    console.log(LOG_PREFIX, "video info:", info.videoId, JSON.stringify(capped.title));
+  }
+  videoInfos.delete(info.videoId);
+  videoInfos.set(info.videoId, capped);
+  while (videoInfos.size > MAX_VIDEO_INFOS) videoInfos.delete(videoInfos.keys().next().value!);
 }
 
 // ---------- audio from the page script ----------
@@ -287,6 +329,8 @@ window.addEventListener("message", (event) => {
     console.log(LOG_PREFIX, "content script got page message: page-ready");
   } else if (message.type === "caption-mode") {
     captionTrack.onVerdict(message);
+  } else if (message.type === "video-info") {
+    onVideoInfo(message.info);
   } else if (message.type === "creator-captions") {
     creatorReplies.set(message.videoId, message);
     while (creatorReplies.size > 8) creatorReplies.delete(creatorReplies.keys().next().value!);
@@ -351,6 +395,7 @@ function syncCacheKey(target: VideoState) {
   target.jobs.clear();
   // The creator's lines are all there from the start; translations come per chunk.
   setCues(target, creator ? creator.cues.map((cue) => ({ ...cue })) : []);
+  target.glossary = {};
   target.lastError = "";
   overlay.clear();
   loadCache(key).then(
@@ -379,6 +424,8 @@ function syncCacheKey(target: VideoState) {
             target.cues.toSorted((a, b) => a.start - b.start),
           );
         }
+        // Entries found meanwhile were found later in the video: the cached ones came first.
+        target.glossary = { ...parseGlossary(entry.glossary), ...target.glossary };
         console.log(
           LOG_PREFIX,
           `cache hit: ${entry.chunks.length} chunks, ${entry.cues.length} cues`,
@@ -402,6 +449,7 @@ function persist(target: VideoState) {
   saveCache(target.cacheKey, {
     chunks: done.filter((job) => !job.untranslated).map(({ start, end }) => ({ start, end })),
     cues: target.cues.filter((cue) => !inSkipped(cue)),
+    glossary: target.glossary,
     savedAt: Date.now(),
   }).catch((error: unknown) => console.warn(LOG_PREFIX, "could not save the cache", error));
 }
@@ -440,29 +488,50 @@ async function translateLines(
     await waitUntil(() => before.status !== "running", CONTEXT_WAIT_MS, signal);
     if (signal.aborted || state !== target) return false;
   }
-  const trRequest: RuntimeMessage = {
+  const lines = fresh.map((cue) => cue.original);
+  const context = recentLines(target, Math.min(job.start, fresh[0]!.start)).filter(
+    (cue) => !fresh.includes(cue),
+  );
+  const info = videoInfos.get(target.videoId);
+  const trRequest: TranslateMessage = {
     type: "translate",
     requestId: requestIds(target, job)[1]!,
     videoId: target.videoId,
-    lines: fresh.map((cue) => cue.original),
-    context: recentLines(target, Math.min(job.start, fresh[0]!.start))
-      .filter((cue) => !fresh.includes(cue))
+    lines,
+    context: context
       .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
       .join("\n"),
+    ...(info ? { video: { title: info.title, channel: info.channel } } : {}),
+    glossary: relevantTerms(target.glossary, [...lines, ...context.map((cue) => cue.original)]),
   };
+  job.sentGlossary = trRequest.glossary;
   const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
   if (signal.aborted || state !== target) return false;
   if (tr?.ok) quota = tr.quota;
   else if (tr?.quotaPaused) quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
   if (tr?.ok) {
+    // A chunk translated alongside this one may have fixed a term's rendering first.
+    const fixed = applyGlossary(tr.lines, tr.terms, target.glossary);
+    if (fixed.replaced.length) {
+      console.log(LOG_PREFIX, `glossary applied to ${label}: ${fixed.replaced.join(", ")}`);
+    }
     fresh.forEach((cue, i) => {
-      cue.translation = tr.lines[i] ?? cue.original;
+      cue.translation = fixed.lines[i] ?? cue.original;
     });
     target.cuesVersion++;
     target.lastError = "";
+    job.replyTerms = tr.terms;
+    const added = mergeTerms(target.glossary, tr.terms, lines);
+    if (added.length) {
+      console.log(
+        LOG_PREFIX,
+        `glossary +${added.length}: ${added.map(([a, b]) => `${a}→${b}`).join(", ")}`,
+      );
+    }
     console.log(
       LOG_PREFIX,
       `translation ${label}: ${fresh.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
+        `, glossary ${trRequest.glossary?.length ?? 0}` +
         (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
     );
   } else {
@@ -592,13 +661,18 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       );
     }
     const previous = recentLines(target, job.start);
+    const info = videoInfos.get(target.videoId);
     const asrRequest: RuntimeMessage = {
       type: "transcribe",
       requestId: asrId!,
       videoId: target.videoId,
       wavBase64: bytesToBase64(audio.wav),
       durationSeconds: audio.duration,
-      context: previous.map((cue) => cue.original).join(" "),
+      context: buildWhisperPrompt(
+        info,
+        previous.map((cue) => cue.original).join(" "),
+        settings.sourceLanguage,
+      ),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
     if (quota.whisper === "out") {
@@ -673,6 +747,8 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
         envelope: energyEnvelope(audio.samples, WAV_SAMPLE_RATE),
         voice,
         cues: fresh,
+        ...(job.sentGlossary?.length ? { glossary: job.sentGlossary } : {}),
+        ...(job.replyTerms ? { terms: job.replyTerms } : {}),
       });
     }
   } catch (error) {

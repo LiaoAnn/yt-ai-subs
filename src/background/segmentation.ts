@@ -48,6 +48,8 @@ const HALLUCINATIONS: readonly RegExp[] = [
   /시청해\s*주셔서\s*감사합니다/,
   /구독과\s*좋아요/,
   /^字幕/,
+  // Only a bracketed note ("〈字幕〉", "[音楽]", "(笑)"): never speech.
+  /^\s*[[(（〈《【<][^\])）〉》】>]*[\])）〉》】>]\s*$/,
   /Thank you for watching/i,
   /請不吝點贊/,
 ];

@@ -8,6 +8,7 @@ import {
   parseTranslatedLines,
   transcribe,
   translate,
+  translationUserMessage,
 } from "./groq";
 import { RateLimiter, type Cost } from "./rate-limiter";
 
@@ -121,6 +122,39 @@ describe("billing with a mocked Groq", () => {
       translate(new RateLimiter(), settings, ["x"], "", signal, () => {}, onBilled),
     ).rejects.toThrow("翻譯失敗 400");
     expect(billed).toHaveLength(1);
+  });
+});
+
+describe("translationUserMessage", () => {
+  it("gives the video, the glossary, the context and the numbered lines, in that order", () => {
+    const text = translationUserMessage(["유재석 형"], "앞 → 前", {
+      video: { title: "지석진의\n핑계", channel: "뜬뜬" },
+      glossary: [["유재석", "劉在錫"]],
+    });
+    expect(text).toBe(
+      'Video: "지석진의 핑계", channel 뜬뜬\n\n' +
+        "Glossary (renderings already used in this video; use them again):\n유재석 → 劉在錫\n\n" +
+        "Previous lines (original → translation), for context only:\n앞 → 前\n\n" +
+        'Lines to translate (1):\n{"1":"유재석 형"}',
+    );
+  });
+
+  it("leaves out what is missing", () => {
+    expect(translationUserMessage(["a"], "")).toBe('Lines to translate (1):\n{"1":"a"}');
+  });
+});
+
+describe("Whisper prompt cap", () => {
+  it("keeps everything buildWhisperPrompt returns, even with long Latin captions", async () => {
+    const { buildWhisperPrompt } = await import("@/shared/video-context");
+    const { WHISPER_PROMPT_CHARS } = await import("./groq");
+    const prompt = buildWhisperPrompt(
+      { videoId: "a", title: "Some Show", channel: "Chan", description: "", keywords: [] },
+      "word ".repeat(400),
+      "en",
+    );
+    expect(prompt.startsWith("Some Show. Chan.")).toBe(true);
+    expect(prompt.length).toBeLessThanOrEqual(WHISPER_PROMPT_CHARS);
   });
 });
 
