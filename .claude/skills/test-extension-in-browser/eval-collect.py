@@ -22,6 +22,8 @@ AD_SKIP_DIR = os.environ.get("QA_AD_SKIP", "")
 KEY_FILE = "/home/dev/.local/state/yt-ai-subs/groq-key"
 DRY_SECONDS = 480
 DRY_RATE = 2
+# Seconds before a Whisper window's end at which playback stops (the scheduler's lead).
+LOOKAHEAD = 80
 
 
 def log(*a):
@@ -127,7 +129,7 @@ PLAYER_STATE = """(() => { const p = document.getElementById('movie_player'); co
  const ad = p.classList.contains('ad-showing');
  if (ad) { const b = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, button[id^=skip-button]'); if (b) b.click(); v.muted = true; if (v.paused) v.play(); }
  const err = document.querySelector('.ytp-error')?.innerText ?? '';
- return JSON.stringify({ready: true, ad, t: v.currentTime, paused: v.paused, ended: v.ended, rate: v.playbackRate, err,
+ return JSON.stringify({ready: true, ad, t: v.currentTime, paused: v.paused, ended: v.ended, rate: v.playbackRate, err, vis: document.visibilityState,
    sorry: location.href.includes('google.com/sorry')}); })()"""
 
 GT_JS = r"""(() => { window.__gt = null; (async () => {
@@ -236,7 +238,7 @@ def play_range(b, start, end, rate, wall_limit):
         if abs(t - last_t) > 0.5:
             last_t, last_move = t, time.time()
         elif time.time() - last_move > 40:
-            log("stalled at", t, st.get("err"))
+            log("stalled at", t, st.get("err"), st.get("vis"))
             b.eval("(() => { const p = document.getElementById('movie_player'); const v = document.querySelector('video'); p.seekTo(%f, true); v.play(); return 1; })()" % (t + 1))
             last_move = time.time()
     b.eval("(() => { const v = document.querySelector('video'); v.pause(); return 1; })()")
@@ -331,17 +333,21 @@ def dry(session, root, ids, gt_only=False):
     b.ab("close")
 
 
+# A 429 from Groq, as the extension logs it ("Groq 429 on whisper", "語音辨識失敗 429"), not
+# a 429 in some number of a state line.
+TOO_MANY = __import__("re").compile(r"Groq 429|失敗 429")
 CAPS = {"requests": 300, "audio": 14400, "tokens": 50000}
 
 
-def usage_of(lines):
+def usage_of(lines, captures):
+    """Whisper requests and billed audio from the captures (a log line can be missed),
+    translation tokens from the log."""
     import re
-    req, audio, tokens = 0, 0.0, 0
+    sent = [c for c in captures.values() if c.get("raw") is not None and c.get("sentSeconds", 0) > 0]
+    req = len(sent)
+    audio = sum(max(10.0, c["sentSeconds"]) for c in sent)
+    tokens = 0
     for l in lines:
-        m = re.search(r"whisper [\d.]+–[\d.]+ s \(([\d.]+) s audio", l)
-        if m:
-            req += 1
-            audio += max(10.0, float(m.group(1)))
         m = re.search(r"translation [\d.]+–[\d.]+ s: \d+ lines, (\d+) tokens", l)
         if m:
             tokens += int(m.group(1))
@@ -353,15 +359,18 @@ def whisper(session, root, plan_path):
     b = Browser(session)
     b.start()
     failed = []
+    # What every earlier run used counts against the caps, planned now or not.
     used = {"requests": 0, "audio": 0.0, "tokens": 0}
+    os.makedirs(f"{root}/whisper", exist_ok=True)
+    for name in os.listdir(f"{root}/whisper"):
+        prev = json.load(open(f"{root}/whisper/{name}"))
+        r, a, t = usage_of(prev.get("log", []), prev.get("captures", {}))
+        used["requests"] += r; used["audio"] += a; used["tokens"] += t
+    log("used so far", used)
     for item in plan:
         vid = item["videoId"]
         path = f"{root}/whisper/{vid}.json"
         if os.path.exists(path):
-            prev = json.load(open(path))
-            r, a, t = usage_of(prev.get("log", []))
-            used["requests"] += r; used["audio"] += a; used["tokens"] += t
-            log(vid, "done already")
             continue
         need_audio = (item["end"] - item["start"]) + 60
         if used["requests"] + 12 > CAPS["requests"] or used["audio"] + need_audio > CAPS["audio"]:
@@ -381,39 +390,44 @@ def whisper(session, root, plan_path):
             if problem == "sorry":
                 break
             continue
-        st = play_range(b, item["start"], item["end"], 1, wall_limit=(item["end"] - item["start"]) * 2 + 60)
-        # Chunks may wait for Groq's rate limit: wait until the captures reach the window's
-        # end and stop changing (at most 20 minutes).
+        # The scheduler keeps 30-60 s of chunks ahead of the playhead: stop LOOKAHEAD
+        # seconds before the window ends, then hide the tab (the popup comes to the front):
+        # a hidden tab starts no new chunk, so the captures end near the window's end and no
+        # request goes beyond it. Wait for the chunks in flight to arrive.
+        st = play_range(b, item["start"], item["end"] - LOOKAHEAD, 1,
+                        wall_limit=(item["end"] - item["start"]) * 2 + 60)
+        b.popup()
         stable, last_n, t0 = 0, -1, time.time()
         while time.time() - t0 < 1200:
             time.sleep(10)
-            b.popup()
-            info = b.eval("chrome.storage.local.get(null).then(all => { const e = Object.entries(all).filter(([k]) => k.startsWith(%s));"
-                          " return JSON.stringify({n: e.length, end: Math.max(0, ...e.map(([, v]) => v.end))}); })"
-                          % json.dumps(f"debug:{vid}:"))
-            b.page()
-            n, end = info.get("n", 0), info.get("end", 0)
+            n = b.eval("chrome.storage.local.get(null).then(all => Object.keys(all).filter(k => k.startsWith(%s)).length)"
+                       % json.dumps(f"debug:{vid}:"))
             stable = stable + 1 if n == last_n else 0
             last_n = n
-            if (end >= item["end"] - 8 and stable >= 2) or stable >= 9:
+            if stable >= 3:
                 break
+        # Off before the YouTube tab is shown again, or it would schedule more chunks for
+        # the paused playhead. The next video's settings turn it on again.
+        b.eval("chrome.storage.local.get('settings').then(s => chrome.storage.local.set({settings: {...s.settings, enabled: false}})).then(() => 'off')")
+        b.page()
         console, _, _ = b.ab("console")
         lines = [l for l in console.splitlines() if ("[yt-ai-subs]" in l or "[ad-skip]" in l) and (
-            "whisper " in l or "translation " in l or "429" in l or "failed" in l or "no voice" in l or "ad started" in l)]
+            "whisper " in l or "translation " in l or TOO_MANY.search(l) or "failed" in l or "no voice" in l or "ad started" in l)]
         data = b.export(vid)
         limits = b.rate_limits()
-        r, a, t = usage_of(lines)
+        r, a, t = usage_of(lines, data)
         used["requests"] += r; used["audio"] += a; used["tokens"] += t
         log(vid, "chunks", len(data), "requests", r, "audio", round(a), "tokens", t, "total", used)
         save(path, {"videoId": vid, "start": item["start"], "end": item["end"], "translate": translate,
                     "captures": data, "log": lines, "rateLimiter": limits})
         b.ab("console", "--clear")
+        b.ab("open", "about:blank")  # leave the video before the extension is turned on again
         server = (limits or {}).get("whisper", {}).get("requests") if isinstance(limits, dict) else None
         if server and server.get("limit") and server["remaining"] < 0.3 * server["limit"]:
             log("daily Whisper requests under 30%", server)
             failed.append((vid, "budget"))
             break
-        if any("429" in l for l in lines):
+        if any(TOO_MANY.search(l) for l in lines):
             log("429 seen, stopping")
             failed.append((vid, "429"))
             break

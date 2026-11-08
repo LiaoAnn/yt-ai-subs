@@ -150,7 +150,45 @@ Re-translating saved lines without Whisper: `node scripts/qa-replay.ts --json <c
 
 Groq usage for a run: count the `whisper … (<n> s audio)` and `translation …, <n> tokens` lines in the console (Groq bills each transcription as at least 10 s), and read `rateLimiter` from `chrome.storage.session` for the remaining budgets Groq reported.
 
-## 8. Evidence and cleanup
+## 8. Evaluation set (ground truth, captures, scores)
+
+The evaluation set (`src/qa/dataset.ts`: video IDs with language, content type and voice type) scores voice detection (layer A), the hallucination filters (B) and the captions the viewer gets (C) against creator caption tracks, so a change to `voice.ts`, the filters or segmentation is judged by numbers. Caption text and captures stay in `.qa/` (gitignored); only voice features and speech intervals of a few stretches are committed, as CI fixtures (`src/test/eval/`).
+
+Collect on the VM host with the two scripts next to this file (Python, agent-browser; they wait while 3 or more agent-browser Chromes run or under 3 GB is free, pace page loads one per video, and never print the key):
+
+```bash
+cp -r <path>/dist <scratchpad>/ext    # a copy: a rebuild must not change the extension mid-run
+export QA_EXTENSION=<scratchpad>/ext QA_AD_SKIP=<path>/test/ad-skip
+D=<path>/.claude/skills/test-extension-in-browser
+python3 -I $D/eval-collect.py dry <session> <path>/.qa <id>...       # creator + automatic tracks, dry run 0–480 s at 2×
+python3 -I $D/eval-collect.py gt <session> <path>/.qa <id>...        # tracks only (retry failed fetches)
+python3 -I $D/eval-plan.py <path>/.qa <ids-file> <ids-to-translate> > <scratchpad>/plan.json
+python3 -I $D/eval-collect.py whisper <session> <path>/.qa <scratchpad>/plan.json   # Groq: needs the brief's OK
+```
+
+- `dry` and `whisper` set `debugCapture`, `debugForceWhisper` (videos with a creator track would otherwise skip Whisper) and, for `dry`, `debugDryRun`. Every video of the set has creator tracks.
+- Tracks: the player's own timedtext request carries the `pot` token; the script records the URLs the player opens (the extension answers some requests itself, so they never reach the network), switches to a real track to make the player ask, and `setOption("captions", "reload", true)` when the first request had no token.
+- Whisper windows (`eval-plan.py`): the 180 s inside 0–480 s with the most speech, preferring one with a pause of 8 s or more. Playback stops 80 s before the window's end (the scheduler's lead), then the popup tab comes to the front: a hidden tab starts no new chunk, so nothing is billed past the window. The extension is turned off before the YouTube tab is shown again, or it schedules more chunks for the paused playhead (2 wasted requests in the first run). One window costs about 7 requests and 190 s of audio; translation about 10,000 tokens.
+- Stop at the first `google.com/sorry` (the script does) and wait 20 minutes.
+
+Score (in the dev container, no API calls):
+
+```bash
+T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-eval.ts             # per video, per category, voice type, language
+T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-eval.ts --dataset   # what each video's ground truth supports, and why
+T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-eval.ts --video <id>   # one video, every number
+T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-eval.ts --saved     # C on the cues saved at capture time, not a replay
+T3CODE_WORKTREE_PATH=<path> wt-exec node scripts/qa-eval.ts --write-fixture <id> <from> <to> <name>   # a CI fixture
+```
+
+What the columns mean:
+
+- **Ground truth** (`src/qa/ground-truth.ts`, the trap rules of the `research-youtube-captions` skill): the creator track in the spoken language is compared with YouTube's automatic track. Line starts are matched to automatic words that start with the line's first two characters (the nearest start alone mismatched on tracks with sparse word timing: p90 1.17 s instead of 0.27 s on Il3rOIG-6pg). A copy of the automatic track (start offset |median| and p90 under 0.03 s and difference under 0.1) is dropped; YouTube-aligned timing (offset 0, text hand-made) keeps CER only; a difference over 0.5, under 60% of the automatic speech covered, or start p90 over 1 s each turn off what they spoil. Precision needs gaps between lines (20% of gaps over 0.3 s) and an automatic track. A translation track alone (ROLAND) gives recall and the reference translation. Cards, notes and speaker labels are removed from the text first.
+- **A**: the dry-run features laid end to end, and a 10 s and a 30 s chunk starting at every second, each decided as the content script does (`bestVoicedWindow ≥ MIN_VOICED_SHARE`). `talk`: talk seconds in sent chunks; `lines skipped`: lines (by midpoint) that some skipped chunk contained; `BGM skipped` / `quiet skipped`: no-speech chunks (neither creator nor automatic track within 0.5 s) louder / quieter than −45 dBFS median that were skipped; `prec`: sent chunks with at least 0.5 s of talk.
+- **B**: every Whisper segment of the captures with the filters' decision (`segmentDecisions`), labelled speech (overlaps creator lines, or shares half its character pairs with the lines within 3 s), no speech (nothing from the creator or the automatic track within 1 s, only where precision is supported) or unsure.
+- **C**: over the window the captures cover, with segmentation replayed by the current code: share of talk seconds while a line shows; CER of all our lines against the creator's (NFKC, no punctuation or spaces; kanji/kana spelling differences count as errors, so compare numbers between versions, not with other systems); start/end offsets for lines that start (end) with the same two characters within 2 s; chrF (character n-grams 1–6, β = 2) of the translation against a Traditional Chinese creator track over the window. chrF needs no word segmentation and ignores where lines were split, which differs between our lines and the creator's.
+
+## 9. Evidence and cleanup
 
 - `agent-browser --session $S screenshot <scratchpad>/<name>.png` for the YouTube page and the popup.
 - `agent-browser --session $S close` when done.

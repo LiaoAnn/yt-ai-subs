@@ -250,8 +250,11 @@ export interface GroundTruth {
   videoId: string;
   language: string;
   lengthSeconds: number;
-  /** The track speech times come from, and whether it is a translation of the speech. */
-  source: { vssId: string; translation: boolean } | null;
+  /**
+   * The track speech times come from: the creator's text of the speech (verbatim), the
+   * creator's translation of it, or YouTube's automatic track (no creator track at all).
+   */
+  source: { vssId: string; kind: "verbatim" | "translation" | "automatic" } | null;
   /** Creator lines that are speech (cards and labels dropped from the text). */
   lines: Line[];
   /** Spans where the automatic track heard speech (no `[音楽]` notes). */
@@ -324,6 +327,26 @@ export function groundTruth(video: FetchedVideo, language: string): GroundTruth 
     // A translation track still says where people talk (line starts), not what they said.
     const translated =
       reference ?? creator.map((t) => ({ vssId: t.vssId, lines: creatorLines(t.json) }))[0];
+    if (!translated && asr) {
+      // Only YouTube's automatic track: not ground truth for text, but where it heard
+      // speech is a (weak) label for voice detection's recall.
+      const lines = asr.lines
+        .filter((l) => !SOUND_NOTE.test(l.text) && !isNonSpeech(l.text))
+        .map((l) => ({ ...l, text: speechText(l.text) }));
+      flags.push("automatic track only: weak speech labels, recall only");
+      supports.recall = lines.length > 0;
+      const asrVss = video.tracks.find(
+        (t) => t.kind === "asr" && lang(t.languageCode) === language,
+      )!.vssId;
+      return {
+        ...base,
+        source: { vssId: asrVss, kind: "automatic" },
+        lines,
+        stats: null,
+        flags,
+        supports,
+      };
+    }
     if (!translated) {
       flags.push("no creator track");
       return { ...base, source: null, lines: [], stats: null, flags, supports };
@@ -335,7 +358,7 @@ export function groundTruth(video: FetchedVideo, language: string): GroundTruth 
     supports.translation = reference !== null;
     return {
       ...base,
-      source: { vssId: translated.vssId, translation: true },
+      source: { vssId: translated.vssId, kind: "translation" },
       lines,
       stats,
       flags,
@@ -356,7 +379,7 @@ export function groundTruth(video: FetchedVideo, language: string): GroundTruth 
     flags.push("copy of the automatic track");
     return {
       ...base,
-      source: { vssId: same.vssId, translation: false },
+      source: { vssId: same.vssId, kind: "verbatim" },
       lines,
       stats,
       flags,
@@ -380,7 +403,7 @@ export function groundTruth(video: FetchedVideo, language: string): GroundTruth 
   supports.translation = reference !== null;
   return {
     ...base,
-    source: { vssId: same.vssId, translation: false },
+    source: { vssId: same.vssId, kind: "verbatim" },
     lines,
     stats,
     flags,

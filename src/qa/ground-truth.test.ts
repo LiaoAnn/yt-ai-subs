@@ -158,6 +158,17 @@ describe("groundTruth trap rules", () => {
     expect(g.reference?.vssId).toBe(".zh-Hant");
   });
 
+  it("falls back to the automatic track as weak speech labels, for recall only", () => {
+    const g = groundTruth(
+      video([{ languageCode: "ja", kind: "asr", vssId: "a.ja", json: asr(texts) }]),
+      "ja",
+    );
+    expect(g.source).toEqual({ vssId: "a.ja", kind: "automatic" });
+    expect(g.flags[0]).toMatch(/automatic track only/);
+    expect(g.supports).toEqual({ cer: false, recall: true, precision: false, translation: false });
+    expect(g.lines.length).toBe(25);
+  });
+
   it("tells Traditional from Simplified Chinese", () => {
     expect(isTraditional([{ start: 0, end: 1, text: "這個時候我們說過會來這裡" }])).toBe(true);
     expect(isTraditional([{ start: 0, end: 1, text: "这个时候我们说过会来这里" }])).toBe(false);

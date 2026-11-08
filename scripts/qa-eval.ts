@@ -83,7 +83,8 @@ function truthOf(gt: GroundTruth): { speech: SpeechTruth; caption: Truth } {
     speech: { speech, lines, anySpeech, precision: gt.supports.precision },
     caption: {
       speech,
-      lines: gt.source?.translation ? [] : gt.lines,
+      // Text matching only against the creator's own words.
+      lines: gt.source?.kind === "verbatim" ? gt.lines : [],
       anySpeech,
       reference: gt.reference?.lines ?? null,
       supports: gt.supports,
