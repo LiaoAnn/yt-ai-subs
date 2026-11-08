@@ -93,7 +93,39 @@ From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chr
 
 Never print the key or put it on a command line. Pipe the script into `eval --stdin` and return only its length, e.g. a script that runs `python3 -I` to read the key file (`/home/dev/.local/state/yt-ai-subs/groq-key` on the dev VM; see "Secrets" in `AGENTS.md`) and print `chrome.storage.local.set({settings: {...stored, groqApiKey: <json>}})` JS, piped into `agent-browser --session $S eval --stdin`, run on the popup page. Count usage from the `whisper` / `translation` log lines (Groq bills each transcription as at least 10 s).
 
-## 6. Evaluating caption quality offline (debug captures)
+## 6. Quota levels and Groq replies without Groq (fake replies)
+
+To run the real background code (rate limiter, `x-ratelimit-*` headers, quota levels, the translation pause, the low-quota scheduling) without a key or a Groq call, `test/fake-groq/fake-groq.mjs` answers the service worker's requests to `https://api.groq.com/*` through CDP. It is a CDP client run with the VM's `node` (it listens on nothing); it is test-only, never part of the extension.
+
+```bash
+SP=<scratchpad>
+UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+# 1. Start the browser with Groq unresolvable, so a request the fake misses fails instead of reaching Groq.
+agent-browser --session $S --extension <path>/dist --extension <path>/test/ad-skip --user-agent "$UA" \
+  --args "--no-sandbox,--disable-blink-features=AutomationControlled,--host-resolver-rules=MAP api.groq.com ~NOTFOUND" open about:blank
+# 2. The fake: what it answers comes from control.json, re-read for every request.
+echo '{"delayMs":0,"whisper":{"remaining":1900,"limit":2000},"chat":{"remaining":900,"limit":1000}}' > $SP/control.json
+node <path>/test/fake-groq/fake-groq.mjs "$(agent-browser --session $S get cdp-url)" $SP/control.json $SP/fake-log.jsonl   # in the background
+# 3. A fake key on the popup page (section 3), then play a video with speech (muted).
+```
+
+- `fake-log.jsonl` gets `attached` (with `fetchEnabled: true`) for the extension's service worker, then `whisper-start` / `whisper-done` and `chat-start` / `chat-done` per request. Whisper replies are two numbered Japanese lines (`偽の字幕その<n>番です。`) at 1–3 s and 4–6 s of each chunk; translations are `【假譯】<line>`.
+- `remaining` / `limit` become the `x-ratelimit-*-requests` headers (the daily request budget, reset in 2 h): `remaining` under 10% of `limit` puts that kind at `low`, 0 at `out`, from the next reply on. The content script learns it from that reply or its next `get-quota` (every 30 s).
+- `delayMs` holds every reply that long: above the 5 s a chunk waits for the one before it, it shows whether two Whisper requests run at once (`whisper-start` twice before a `whisper-done`).
+- The fake auto-attaches to service workers that start later, paused until interception is on; a restart of ours was not observed in the runs so far (the attached CDP session seems to keep it alive; `Target.closeTarget` on it reported success but no new worker started), so that path is untested. The `--host-resolver-rules` guard covers it either way: 0 `blocked` lines and no Groq traffic in 3 runs. Stop the fake before closing the browser.
+- To show a budget in the popup without any request, seed `groqUsage` instead (e.g. 185,000 chat tokens in the current hour: `{hours: {chat: [{hour: Math.floor(Date.now() / 3600000), cost: {requests: 0, audioSeconds: 0, tokens: 185000}}], whisper: []}, videos: {}}`). The service worker reads `groqUsage` only when it starts, so for the extension itself use the headers.
+
+What the levels must do (AGENTS.md, "Quota and usage"), and where to see it:
+
+| Level         | Check                                                                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| chat `low`    | no further `chat-start` in the fake log; `whisper` lines still logged; the CC track shows the original only; status "翻譯額度剩不到 10%，暫停翻譯，只顯示原文"; the `cache:<video>:…` entry lists only translated chunks |
+| whisper `low` | never two `whisper-start` without a `whisper-done` between them (with `delayMs` over 5 s); chunks end at most ~30 s + one chunk ahead of the playhead                                                                    |
+| whisper `out` | no `whisper-start` after the reply that said 0; `state` logs `reason` "今天的語音辨識額度用完了"; status "AI 字幕：今天的語音辨識額度用完了"                                                                             |
+
+The popup's "Groq 今日額度" lists each budget ("剩 50 / 1,000") with the warnings.
+
+## 7. Evaluating caption quality offline (debug captures)
 
 To judge timing and line breaks without paying for the same audio twice, record what each chunk produced and re-run segmentation on it locally.
 
@@ -118,7 +150,7 @@ Re-translating saved lines without Whisper: `node scripts/qa-replay.ts --json <c
 
 Groq usage for a run: count the `whisper … (<n> s audio)` and `translation …, <n> tokens` lines in the console (Groq bills each transcription as at least 10 s), and read `rateLimiter` from `chrome.storage.session` for the remaining budgets Groq reported.
 
-## 7. Evidence and cleanup
+## 8. Evidence and cleanup
 
 - `agent-browser --session $S screenshot <scratchpad>/<name>.png` for the YouTube page and the popup.
 - `agent-browser --session $S close` when done.

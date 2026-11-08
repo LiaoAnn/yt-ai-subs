@@ -11,6 +11,16 @@ interface Stream {
   scale: number;
   /** The last WebM cluster seen, which may continue in the next append. */
   open: Cluster | null;
+  /**
+   * WebM: the last bytes of the stream so far (at most HEADER_CARRY), kept because a cluster
+   * header can start in one append and end in the next; they are already stored in `open`
+   * (or the init) and get moved to the new cluster when its header turns out to start there.
+   */
+  tail: Uint8Array;
+  /** WebM: byte offset in the stream of the last cluster header found (-1: none yet). */
+  lastHeader: number;
+  /** WebM: bytes seen on this stream since its init segment, init included. */
+  offset: number;
 }
 
 export interface Cluster {
@@ -42,6 +52,12 @@ export interface Coverage {
 }
 
 export type Readiness = "ready" | "wait" | "never";
+
+/**
+ * Longest Cluster header findClusters needs (ID 4 + size 8 + CRC-32 6 + Timecode 1 + 8 + 8),
+ * rounded up: the bytes kept from one append in case a header continues in the next.
+ */
+const HEADER_CARRY = 40;
 
 /** Clusters closer than this (seconds) count as contiguous. */
 const JOIN_GAP = 0.25;
@@ -78,26 +94,24 @@ export class AudioStore {
     if (isInit) {
       const initKey = `${bufferId}:${++this.initCounter}`;
       const webm = isWebmInit(bytes);
-      let initBytes = bytes;
-      if (webm) {
-        const first = findClusters(bytes)[0];
-        if (first) {
-          initBytes = bytes.slice(0, first.pos);
-          media = bytes.subarray(first.pos);
-        } else {
-          media = null;
-        }
-      } else {
-        media = null; // MP4 init: kept whole (rarely includes a first fragment)
-      }
-      this.inits.set(initKey, initBytes);
       stream = {
         initKey,
         format: webm ? "webm" : "mp4",
         scale: webm ? timecodeScaleSeconds(bytes) : 0,
         open: null,
+        tail: new Uint8Array(0),
+        lastHeader: -1,
+        offset: 0,
       };
       this.streams.set(bufferId, stream);
+      if (webm) {
+        // The init and any clusters after it, in the same append, go through appendWebm.
+        this.inits.set(initKey, new Uint8Array(0));
+        this.appendWebm(stream, bytes);
+        return;
+      }
+      this.inits.set(initKey, bytes); // MP4 init: kept whole (rarely includes a first fragment)
+      media = null;
     }
     if (!stream) {
       this.droppedWithoutInit++;
@@ -106,28 +120,7 @@ export class AudioStore {
     if (!media || !media.length) return;
 
     if (stream.format === "webm") {
-      const found = findClusters(media);
-      const firstPos = found[0]?.pos ?? media.length;
-      if (firstPos > 0 && stream.open) {
-        stream.open.parts.push(media.slice(0, firstPos));
-        stream.open.endLength = -1;
-      }
-      for (let i = 0; i < found.length; i++) {
-        const header = found[i]!;
-        const next = found[i + 1];
-        const cluster: Cluster = {
-          initKey: stream.initKey,
-          start: header.timecode * stream.scale,
-          parts: [media.slice(header.pos, next ? next.pos : media.length)],
-          scale: stream.scale,
-          fixedEnd: false,
-          end: header.timecode * stream.scale,
-          endLength: -1,
-        };
-        // A re-sent cluster replaces the old copy.
-        this.clusters.set(`${stream.initKey}@${header.timecode}`, cluster);
-        stream.open = cluster;
-      }
+      this.appendWebm(stream, media);
     } else {
       if (spanStart === null || spanEnd === null) return;
       this.clusters.set(`${stream.initKey}@${spanStart.toFixed(3)}`, {
@@ -139,6 +132,82 @@ export class AudioStore {
         fixedEnd: true,
         endLength: media.length,
       });
+    }
+  }
+
+  /**
+   * Splits a WebM append into clusters. A cluster header may have started in the previous
+   * append: the header search runs over the kept tail plus this append, and the bytes of a
+   * header found in the tail move from where they were stored (the previous cluster or the
+   * init) to the new cluster.
+   */
+  private appendWebm(stream: Stream, media: Uint8Array): void {
+    const isFirst = stream.offset === 0;
+    // An append that starts with a whole cluster header (a seek, or the usual cluster-aligned
+    // append) starts there: the tail is not joined to it, so a header cut off by an aborted
+    // append can't swallow the real one.
+    const aligned = !isFirst && findClusters(media.subarray(0, HEADER_CARRY * 2))[0]?.pos === 0;
+    const tail = aligned ? new Uint8Array(0) : stream.tail;
+    const combined = tail.length ? concatBytes([tail, media]) : media;
+    const base = stream.offset - tail.length; // stream offset of combined[0]
+    const found = findClusters(combined).filter((h) => base + h.pos > stream.lastHeader);
+
+    const firstPos = found[0]?.pos ?? combined.length;
+    if (firstPos < tail.length) {
+      this.trimOwner(stream, tail.length - firstPos);
+    } else if (firstPos > tail.length) {
+      this.extendOwner(stream, combined.slice(tail.length, firstPos));
+    }
+    for (let i = 0; i < found.length; i++) {
+      const header = found[i]!;
+      const next = found[i + 1];
+      const cluster: Cluster = {
+        initKey: stream.initKey,
+        start: header.timecode * stream.scale,
+        parts: [combined.slice(header.pos, next ? next.pos : combined.length)],
+        scale: stream.scale,
+        fixedEnd: false,
+        end: header.timecode * stream.scale,
+        endLength: -1,
+      };
+      // A re-sent cluster replaces the old copy.
+      this.clusters.set(`${stream.initKey}@${header.timecode}`, cluster);
+      stream.open = cluster;
+      stream.lastHeader = base + header.pos;
+    }
+    stream.offset += media.length;
+    stream.tail = combined.slice(Math.max(0, combined.length - HEADER_CARRY));
+  }
+
+  /** Stores bytes that continue the open cluster, or the init before the first cluster. */
+  private extendOwner(stream: Stream, bytes: Uint8Array): void {
+    if (stream.open) {
+      stream.open.parts.push(bytes);
+      stream.open.endLength = -1;
+    } else {
+      const init = this.inits.get(stream.initKey) ?? new Uint8Array(0);
+      this.inits.set(stream.initKey, concatBytes([init, bytes]));
+    }
+  }
+
+  /** Removes the last `count` bytes stored for the open cluster (or the init). */
+  private trimOwner(stream: Stream, count: number): void {
+    if (stream.open) {
+      const parts = stream.open.parts;
+      while (count > 0 && parts.length) {
+        const last = parts.at(-1)!;
+        if (last.length <= count) {
+          count -= last.length;
+          parts.pop();
+        } else {
+          parts[parts.length - 1] = last.subarray(0, last.length - count);
+          count = 0;
+        }
+      }
+      stream.open.endLength = -1;
+    } else {
+      const init = this.inits.get(stream.initKey);
+      if (init) this.inits.set(stream.initKey, init.subarray(0, Math.max(0, init.length - count)));
     }
   }
 
