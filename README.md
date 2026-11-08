@@ -11,9 +11,16 @@
 
 ## 安裝
 
-目前沒有上架 Chrome 線上應用程式商店，需要自己建置後載入。
+目前沒有上架 Chrome 線上應用程式商店，需要以「未封裝項目」的方式載入。
 
-### 1. 建置
+### 1. 下載
+
+到 [Releases](https://github.com/LiaoAnn/yt-ai-subs/releases/latest) 下載 `yt-ai-subs-v<版本>.zip`，解壓縮到一個固定的資料夾（之後 Chrome 會一直從這裡讀取，不要刪掉）。
+
+<details>
+<summary>或是自己從原始碼建置</summary>
+
+
 
 需要 Node.js 24 以上，pnpm 由 corepack 提供：
 
@@ -29,13 +36,15 @@ pnpm build
 
 也可以用 VS Code 的 Dev Container 開啟專案（設定在 `.devcontainer/`），容器建立時會自動 `pnpm install`，之後在容器裡執行 `pnpm build` 即可。
 
+</details>
+
 ### 2. 載入到 Chrome
 
 1. 開啟 `chrome://extensions`。
 2. 打開右上角的「開發人員模式」。
-3. 點「載入未封裝項目」，選擇專案裡的 `dist/` 資料夾。
+3. 點「載入未封裝項目」，選擇解壓縮後的資料夾（自己建置的話是專案裡的 `dist/`）。
 
-之後若重新建置，到 `chrome://extensions` 按擴充功能上的重新載入按鈕，再重新整理 YouTube 分頁。
+更新時，用新版的檔案覆蓋同一個資料夾，到 `chrome://extensions` 按擴充功能上的重新載入按鈕，再重新整理 YouTube 分頁。設定和 API key 會保留。
 
 ### 3. 設定 Groq API key
 
@@ -67,3 +76,7 @@ API key 只會存在這個瀏覽器的 `chrome.storage.local`，只會送到 Gro
 | `pnpm check` | 型別檢查、lint、格式檢查和測試，commit 前要通過 |
 
 架構、設計決策和開發流程記錄在 [AGENTS.md](AGENTS.md)。
+
+### 發布新版本
+
+把 `public/manifest.json` 和 `package.json` 的 `version` 改成新版本，commit 後推送對應的 tag（例如 `git tag v0.2.0 && git push origin v0.2.0`）。GitHub Actions 會跑檢查、建置，並把 zip 附到新的 Release。

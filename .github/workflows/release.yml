@@ -1,0 +1,46 @@
+# Builds the extension and attaches it to a GitHub release as a zip that can be
+# loaded unpacked in Chrome. Push a tag `v<version>` matching
+# public/manifest.json (e.g. `v0.1.0`) to publish one.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+
+      - name: Check the tag matches the manifest version
+        run: |
+          version=$(node -p "require('./public/manifest.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest version $version" >&2
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+
+      - name: Zip dist
+        run: cd dist && zip -r "../yt-ai-subs-$GITHUB_REF_NAME.zip" .
+
+      - name: Create the release
+        run: gh release create "$GITHUB_REF_NAME" "yt-ai-subs-$GITHUB_REF_NAME.zip" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
