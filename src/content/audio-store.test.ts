@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytes, cluster, initSegment } from "@/test/webm-fixture";
+import { bytes, cluster, initSegment, simpleBlock, unknownSizeElement } from "@/test/webm-fixture";
 import { AudioStore, concatBytes } from "./audio-store";
 
 /** Cluster at `startMs` with blocks every 20 ms for `lengthMs`. */
@@ -7,6 +7,28 @@ const audioCluster = (startMs: number, lengthMs: number) =>
   cluster(
     startMs,
     Array.from({ length: lengthMs / 20 }, (_, i) => i * 20),
+  );
+
+/**
+ * A live-style cluster: an 8-byte unknown size and a CRC-32 before the Timecode make a
+ * 21-byte header, the longest kind findClusters reads in practice.
+ */
+const liveCluster = (startMs: number) =>
+  unknownSizeElement(
+    [0x1f, 0x43, 0xb6, 0x75],
+    [
+      0xbf,
+      0x84,
+      0x12,
+      0x34,
+      0x56,
+      0x78, // CRC-32
+      0xe7,
+      0x82,
+      startMs >> 8,
+      startMs & 0xff, // Timecode
+      ...Array.from({ length: 50 }, (_, i) => simpleBlock(i * 20)).flat(),
+    ],
   );
 
 /** Appends `stream` to a new store, cut at the given byte offsets (the first part is the init). */
@@ -66,6 +88,18 @@ describe("AudioStore", () => {
     }
     for (const points of splits) {
       expect(snapshot(appendAll(stream, points)), `split at ${points.join(",")}`).toEqual(expected);
+    }
+  });
+
+  it("keeps clusters with long headers (unknown size, CRC-32) split at any byte", () => {
+    const init = initSegment();
+    const first = liveCluster(0);
+    const stream = bytes(init, first, liveCluster(1000), liveCluster(2000));
+    const expected = snapshot(appendAll(stream, []));
+    expect(expected.map((c) => c.start)).toEqual([0, 1, 2]);
+    const header = init.length + first.length;
+    for (let at = header - 2; at < header + 24; at++) {
+      expect(snapshot(appendAll(stream, [at])), `split at ${at}`).toEqual(expected);
     }
   });
 
