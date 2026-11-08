@@ -190,6 +190,46 @@ What the columns mean:
 - **B**: every Whisper segment of the captures with the filters' decision (`segmentDecisions`), labelled speech (overlaps creator lines, or shares half its character pairs with the lines within 3 s), no speech (nothing from the creator or the automatic track within 1 s, only where precision is supported) or unsure.
 - **C**: over the window the captures cover, with segmentation replayed by the current code: share of talk seconds while a line shows; CER of all our lines against the creator's (NFKC, no punctuation or spaces; kanji/kana spelling differences count as errors, so compare numbers between versions, not with other systems); start/end offsets for lines that start (end) with the same two characters within 2 s; chrF (character n-grams 1–6, β = 2) of the translation against a Traditional Chinese creator track over the window. chrF needs no word segmentation and ignores where lines were split, which differs between our lines and the creator's.
 
+### Baseline (main at 324a006, 2026-11-08)
+
+`node scripts/qa-eval.ts` on all 48 videos. **Which Whisper prompt each capture had**: 10 were captured after PR #13 (prompt = recent captions only): qtqEsIDUoXY, vgCZDibHYYo, dZgXCAWnz2c, p2Qkl30HiL4, qh5t4WMroyU, 6HEWeWEl4hs, kxVk735LST8, cth3M1iavGM, ZcItk5mKVwE, tQBd744CXBM. The other 38 still carry the PR #9 prompt (title, channel and tags first; checked: 38 of 38 captures' `context` starts with the title), so their B and C numbers are **provisional** until they are re-recorded. Layer A uses only the dry runs and is unaffected.
+
+| group         | videos | A10 talk | A30 talk | A30 lines skipped | A30 BGM skipped | B shown made-up | B speech dropped | C coverage | C CER | C chrF |
+| ------------- | ------ | -------- | -------- | ----------------- | --------------- | --------------- | ---------------- | ---------- | ----- | ------ |
+| ALL           | 48     | 97%      | 99%      | 65/6534           | 60/1069         | 40/2075         | 53/2088          | 85%        | 0.22  | 16.0   |
+| ja            | 28     | 98%      | 100%     | 14/3539           | 58/1053         | 31/880          | 23/872           | 86%        | 0.21  | 16.0   |
+| ko            | 20     | 95%      | 98%      | 51/2995           | 2/16            | 9/1195          | 30/1216          | 84%        | 0.22  | -      |
+| interview     | 7      | 100%     | 100%     | 0/549             | -               | 0/194           | 0/194            | 95%        | 0.15  | -      |
+| variety       | 11     | 100%     | 100%     | 0/2625            | 0/12            | 1/774           | 15/788           | 88%        | 0.27  | -      |
+| reality       | 13     | 96%      | 100%     | 6/1580            | 3/11            | 8/608           | 16/616           | 81%        | 0.34  | 16.0   |
+| news          | 5      | 99%      | 100%     | 0/200             | -               | 2/99            | 3/100            | 80%        | 0.12  | -      |
+| game          | 5      | 100%     | 100%     | 0/736             | 0/7             | 0/153           | 3/156            | 90%        | 0.20  | -      |
+| vlog          | 3      | 78%      | 89%      | 59/481            | -               | 0/129           | 16/145           | 63%        | 0.23  | -      |
+| control       | 3      | 100%     | 100%     | 0/233             | 57/1039         | 29/84           | 0/55             | 97%        | 0.11  | -      |
+| low male      | 4      | 97%      | 100%     | 9/494             | -               | 0/135           | 0/135            | 88%        | 0.15  | -      |
+| female (solo) | 2      | 17%      | 39%      | 50/55             | -               | 0/34            | 16/50            | 11%        | 0.03  | -      |
+| high female   | 1      | 100%     | 100%     | 0/285             | -               | 0/35            | 10/45            | 72%        | 0.52  | -      |
+| bgm only      | 2      | -        | -        | -                 | 57/1039         | 29/29           | -                | -          | -     | -      |
+
+The PR #13 fix, re-recorded on the same planned 180 s windows (B kept speech, C coverage, C CER; before → after). C is scored over what each run's captures cover, which moved by up to 36 s (qh5t4WMroyU 9–170 → 10–198 s, tQBd744CXBM 0–190 → 0–162 s, p2Qkl30HiL4 9–179 → 9–195 s), so read these as run against run, not a fixed stretch: dZgXCAWnz2c 5 → 32, 7% → 91%, 0.99 → 0.28; p2Qkl30HiL4 4 → 39, 5% → 94%, 0.98 → 0.06; qh5t4WMroyU 8 → 31, 21% → 97%, 0.97 → 0.11; 6HEWeWEl4hs 1 → 55, 2% → 97%, 0.99 → 0.11; ZcItk5mKVwE 2 → 28, 6% → 69%, 0.98 → 0.17; tQBd744CXBM 2 → 19, CER 0.96 → 0.03; qtqEsIDUoXY 6 → 54, 9% → 87%; vgCZDibHYYo 4 → 36, 8% → 66%; cth3M1iavGM 7 → 33, 7% → 70%; kxVk735LST8 1 → 15, 2% → 11%. Weak spots the numbers show: kxVk735LST8 (solo female vlog) loses most talk to voice detection (A10 17%) and 16 of 31 speech segments to the filters (low confidence 9, known phrase 5, repeated segment 2); BGM-only stretches are skipped in 57 of 1,039 30 s chunks and 29 of 29 made-up segments there are shown.
+
+**Re-recording the 38 with the #9 prompt** (about 254 requests, 6,300 s of audio and 28K tokens for the 36 below, judging by their first run; needs Groq's OK and a fresh daily budget). 5Ma5inm_Dac and LHZgl2pbY7Q (BGM only) are done separately. The collector skips videos that already have `.qa/whisper/<id>.json`, and counts every capture in `.qa/whisper/` and the set-aside folders it knows (`old-dub`, `ab`, `old-prompt`) against its caps (560 requests, 14,400 s), so move the old captures to a folder it does not count:
+
+```bash
+D=<path>/.claude/skills/test-extension-in-browser   # and QA_EXTENSION / QA_AD_SKIP as above
+printf '%s\n' 0Fk2MSLtrs0 1lARuuPFsQ4 1vu-uMez03U 4gJgP1i6DAA 4pTFJtnmmXE 9ZDTl4fgfqs AORyhKprcFY BsY7fhYfr8s ByUh5ZUTMw4 \
+  CnWnr8O2nMY D5G05hBO8GY EvPQYnWQ6xQ FFe1ZJOyli0 GDAGq2v2mdw GOwhmdNRpok Il3rOIG-6pg JZwQr8UrEcc LJmbmrWKoEs \
+  LKTOWTc9l1E P_uQuBx8Sw0 QXzN05rrY4E XH_RhjO5d5c _xhw8bUhWOk aM1OkS_O6-k aNe9JTBf8Tw bQ1-VvITMvY cF5pOf5RYyU \
+  fkKmhniOimA i4rKSX8afd8 jHoBqAugyhM lmH7BFW-pP0 nOSYk1M9KBo oYUwZrf43mc r9FKdxYS3B4 sV0yiaJUR4U wGri81E7g_E \
+  > <scratchpad>/ids36.txt
+mkdir -p <path>/.qa/prompt9/whisper
+for id in $(cat <scratchpad>/ids36.txt); do mv <path>/.qa/whisper/$id.json <path>/.qa/prompt9/whisper/; done
+python3 -I $D/eval-plan.py <path>/.qa <scratchpad>/ids36.txt 4gJgP1i6DAA,Il3rOIG-6pg,aM1OkS_O6-k > <scratchpad>/plan36.json
+python3 -I $D/eval-collect.py whisper <session> <path>/.qa <scratchpad>/plan36.json
+```
+
+`plan36.json` gives the same windows (and translation for the same 3 videos) as the first run: 36 of 36 checked. After the move the collector counts 39 earlier captures (`whisper/` and the three set-aside folders, including the 10 pre-#13 ones in `old-prompt/`) as 261 requests, 6,404 s and 11,048 tokens, which leaves room for the 36 (515 requests, about 12,700 s, about 39,400 tokens). These caps are not the brief's budget for the run: check that before starting, or set `CAPS` in a scratchpad copy of the script and count only that run. vgCZDibHYYo was re-recorded without translation, so it has no chrF now (before: 0.1, with the #9 prompt).
+
 ## 9. Evidence and cleanup
 
 - `agent-browser --session $S screenshot <scratchpad>/<name>.png` for the YouTube page and the popup.
