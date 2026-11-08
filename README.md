@@ -20,8 +20,6 @@
 <details>
 <summary>或是自己從原始碼建置</summary>
 
-
-
 需要 Node.js 24 以上，pnpm 由 corepack 提供：
 
 ```sh
@@ -68,12 +66,10 @@ API key 只會存在這個瀏覽器的 `chrome.storage.local`，只會送到 Gro
 
 技術棧：React、Vite、shadcn/ui、Tailwind CSS、TypeScript 7、oxlint、oxfmt、Vitest。
 
-| 指令 | 用途 |
-|---|---|
-| `pnpm dev` | 檔案變更時自動重新建置 `dist/` |
-| `pnpm build` | 正式建置 |
-| `pnpm test` | 單元測試 |
-| `pnpm check` | 型別檢查、lint、格式檢查和測試，commit 前要通過 |
+- `pnpm dev`：檔案變更時自動重新建置 `dist/`
+- `pnpm build`：正式建置
+- `pnpm test`：單元測試
+- `pnpm check`：型別檢查、lint、格式檢查和測試，commit 前要通過
 
 架構、設計決策和開發流程記錄在 [AGENTS.md](AGENTS.md)。
 
