@@ -68,7 +68,7 @@ describe("videoTerms", () => {
     const ja = info({
       title: "ハウリングラブ 第1話",
       channel: "ドラマ公式",
-      description: "【出演】山田太郎・佐藤花子\nゲスト：鈴木一郎",
+      description: "【出演】山田太郎・佐藤花子\nゲスト：鈴木一郎\n【MC・コメンテーター】",
       keywords: [],
     });
     expect(videoTerms(ja, "ja")).toEqual(["山田太郎", "佐藤花子", "鈴木一郎"]);

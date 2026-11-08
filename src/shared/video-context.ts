@@ -74,6 +74,9 @@ const HASHTAG = /#([\p{L}\p{N}_]+)/gu;
 /** Lines in a description that list who appears: "출연: 유재석, 지석진". */
 const CAST_LINE =
   /(?:출연|게스트|진행|패널|\bMC\b|\bcast\b|\bguests?\b|\bhosts?\b|出演|ゲスト|司会|メンバー)[\s\]】)）」』]*[:：|]?\s*(.*)$/iu;
+/** Role words on a cast line, not names. */
+const ROLE =
+  /^(?:MC|PD|CP|cast|guests?|hosts?|コメンテーター|ナレーター|ナレーション|司会|出演|ゲスト|メンバー|출연|게스트|진행|진행자|패널|내레이션|작가|編集|撮影)$/iu;
 const LIST_SEPARATOR = /[,，、/／·・|｜&＆\n]+|\s{2,}/u;
 
 const clean = (text: string) =>
@@ -103,11 +106,12 @@ export function cleanTitle(title: string): string {
 function term(raw: string): string | null {
   const text = clean(raw)
     .replace(/[(（][^)）]*[)）]/g, " ")
-    .replace(/^[@#\-–—*•·\s]+|[\s.:：!！?？]+$/gu, "")
+    .replace(/^[@#\-–—*•·\s[\]【】〈〉《》「」『』]+|[\s.:：!！?？[\]【】〈〉《》「」『』]+$/gu, "")
     .trim();
   const length = [...text].length;
   if (length < MIN_TERM_CHARS || length > MAX_TERM_CHARS) return null;
   if (/^[\p{N}\p{P}\s]+$/u.test(text)) return null; // dates, numbers, punctuation
+  if (ROLE.test(text)) return null;
   return text;
 }
 
