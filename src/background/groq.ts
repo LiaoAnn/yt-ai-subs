@@ -3,7 +3,7 @@
 
 import type { Cue } from "@/shared/captions";
 import { parseReplyTerms } from "@/shared/glossary";
-import { WHISPER_PROMPT_TOKENS } from "@/shared/video-context";
+import { WHISPER_PROMPT_CHARS } from "@/shared/video-context";
 import { LOG_PREFIX } from "@/shared/log";
 import type { Settings } from "@/shared/settings";
 import { TARGET_LANGUAGES } from "@/shared/settings";
@@ -20,12 +20,7 @@ const TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 /** Retries after a 429, each one waiting for retry-after first. */
 const MAX_429_RETRIES = 2;
-/**
- * Whisper reads at most 224 prompt tokens; the content script builds a prompt that fits
- * (buildWhisperPrompt, up to about 600 ASCII characters). This only caps what a message
- * can make us send, above anything buildWhisperPrompt returns.
- */
-export const WHISPER_PROMPT_CHARS = 3 * WHISPER_PROMPT_TOKENS + 100;
+export { WHISPER_PROMPT_CHARS };
 const MAX_COMPLETION_TOKENS = 2048;
 
 export class GroqError extends Error {
