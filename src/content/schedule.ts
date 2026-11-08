@@ -49,6 +49,20 @@ export function isFinished(jobs: Iterable<Job>, t: number): boolean {
   return false;
 }
 
+/**
+ * Seconds of finished chunks ahead of playhead `t`, contiguous from `t` (0 when the
+ * playhead itself is not covered). For diagnostics: how far captions are ahead.
+ */
+export function leadSeconds(jobs: Iterable<Job>, t: number): number {
+  const done = [...jobs].filter((job) => job.status === "done");
+  let cursor = t;
+  for (;;) {
+    const covering = done.find((job) => job.start <= cursor + EPS && job.end > cursor + EPS);
+    if (!covering) return Math.max(0, cursor - t);
+    cursor = covering.end;
+  }
+}
+
 /** `flexible`: the end may move to a nearby quiet moment (not pinned by a job or the end). */
 export type NextChunk = { start: number; end: number; flexible: boolean; retry?: Job };
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isFinished, isIrrelevant, nextNeeded, trimCutSentence, type Job } from "./schedule";
+import {
+  isFinished,
+  isIrrelevant,
+  leadSeconds,
+  nextNeeded,
+  trimCutSentence,
+  type Job,
+} from "./schedule";
 
 const done = (start: number, end: number): Job => ({
   start,
@@ -119,5 +126,15 @@ describe("trimCutSentence", () => {
     expect(trimCutSentence(cues, 30, false)).toBeNull();
     expect(trimCutSentence([cues[0]!, { ...cues[1]!, end: 28 }], 30, true)).toBeNull();
     expect(trimCutSentence([cues[1]!], 30, true)).toBeNull();
+  });
+});
+
+describe("leadSeconds", () => {
+  it("counts finished chunks contiguous from the playhead", () => {
+    const jobs = [done(0, 10), done(10, 40), { ...done(40, 70), status: "running" as const }];
+    expect(leadSeconds(jobs, 5)).toBe(35);
+    expect(leadSeconds(jobs, 45)).toBe(0);
+    expect(leadSeconds([done(0, 10), done(20, 30)], 2)).toBe(8);
+    expect(leadSeconds([], 2)).toBe(0);
   });
 });

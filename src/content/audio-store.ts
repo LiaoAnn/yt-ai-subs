@@ -206,6 +206,16 @@ export class AudioStore {
     }
   }
 
+  /** Bytes held (init segments and clusters), for diagnostics. */
+  byteLength(): number {
+    let total = 0;
+    for (const init of this.inits.values()) total += init.length;
+    for (const cluster of this.clusters.values()) {
+      for (const part of cluster.parts) total += part.length;
+    }
+    return total;
+  }
+
   /** Time ranges held, merged per stream, for diagnostics. */
   describe(limit = 4): string[] {
     const merged: { start: number; end: number; initKey: string }[] = [];

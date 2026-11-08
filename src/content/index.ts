@@ -31,6 +31,7 @@ import {
   DEFAULT_SCHEDULE,
   isFinished,
   isIrrelevant,
+  leadSeconds,
   nextNeeded,
   trimCutSentence,
   type Job,
@@ -743,6 +744,12 @@ document.addEventListener(
   true,
 );
 
+/** The renderer's JS heap (Chrome only; shared with the page), for diagnostics. */
+function heapMB(): number | null {
+  const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+  return memory ? Math.round(memory.usedJSHeapSize / 2 ** 20) : null;
+}
+
 let lastDebug = 0;
 function debugLog() {
   if (Date.now() - lastDebug < DEBUG_LOG_MS) return;
@@ -755,6 +762,11 @@ function debugLog() {
     "state",
     JSON.stringify({
       t: v ? Number(v.currentTime.toFixed(1)) : null,
+      rate: v?.playbackRate ?? null,
+      lead: target && v ? Number(leadSeconds(target.jobs.values(), v.currentTime).toFixed(1)) : 0,
+      audioKB: target ? Math.round(target.store.byteLength() / 1024) : 0,
+      jobs: target?.jobs.size ?? 0,
+      heapMB: heapMB(),
       segments: diag.segments,
       clusters: target?.store.clusters.size ?? 0,
       audio: target?.store.describe() ?? [],
