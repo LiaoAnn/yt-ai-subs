@@ -13,7 +13,7 @@ import {
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
-import { playerPlaysDub } from "./audio-track";
+import { DubTracker, playerPlaysDub } from "./audio-track";
 import {
   creatorMessage,
   creatorTick,
@@ -108,9 +108,6 @@ function readConfig() {
 
 /** Called with every player response the page accepts (before it is patched). */
 let onPlayerResponse: (response: unknown) => void = () => {};
-
-/** The last audio track seen per video outside ads: true while an AI dub plays. */
-const dubbedVideos = new Map<string, boolean>();
 
 /** Live streams seen in player responses (they get no track and no captions). */
 const liveVideos = new Set<string>();
@@ -382,6 +379,7 @@ function post(message: Omit<CaptionModeMessage, typeof PAGE_MESSAGE_TAG>) {
 
 function control() {
   const health = new TrackHealth();
+  const dubs = new DubTracker();
   const autoSelected = new Set<string>();
   let staleSince = 0;
   let lastPosted = "";
@@ -421,14 +419,7 @@ function control() {
 
     // While an AI dub plays, leave the video to YouTube: no track selected, no creator track
     // fetched or selected (both happen once the viewer switches to the original).
-    if (videoId && !adShowing) {
-      const dub = playerPlaysDub();
-      if (dub !== null && dubbedVideos.get(videoId) !== dub) {
-        dubbedVideos.set(videoId, dub);
-        while (dubbedVideos.size > 16) dubbedVideos.delete(dubbedVideos.keys().next().value!);
-      }
-    }
-    const dubbed = videoId !== null && dubbedVideos.get(videoId) === true;
+    const dubbed = dubs.observe(videoId, adShowing, adShowing ? null : playerPlaysDub());
 
     const config = readConfig();
     const track = videoId ? trackFor(videoId) : null;

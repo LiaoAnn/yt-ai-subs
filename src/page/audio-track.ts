@@ -37,6 +37,32 @@ export function isAutoDubbed(track: unknown): boolean | null {
   return xtags.includes(DUB_XTAG);
 }
 
+/** How many videos `DubTracker` remembers. */
+const MAX_VIDEOS = 16;
+
+/**
+ * The last audio track seen per video, for the control loop. During an ad the player
+ * reports the ad's track: keep what the video had. An unknown track (`null`, no player
+ * yet) changes nothing.
+ */
+export class DubTracker {
+  private readonly videos = new Map<string, boolean>();
+
+  /** Records what the player plays now; returns whether `videoId` plays a dub. */
+  observe(videoId: string | null, adShowing: boolean, dub: boolean | null): boolean {
+    if (videoId && !adShowing && dub !== null && this.videos.get(videoId) !== dub) {
+      this.videos.delete(videoId);
+      this.videos.set(videoId, dub);
+      while (this.videos.size > MAX_VIDEOS) this.videos.delete(this.videos.keys().next().value!);
+    }
+    return this.isDubbed(videoId);
+  }
+
+  isDubbed(videoId: string | null): boolean {
+    return videoId !== null && this.videos.get(videoId) === true;
+  }
+}
+
 interface AudioTrackPlayer {
   getAudioTrack?: () => unknown;
 }

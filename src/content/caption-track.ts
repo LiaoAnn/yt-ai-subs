@@ -12,6 +12,7 @@ import {
 } from "@/shared/messages";
 import type { Settings } from "@/shared/settings";
 import { TRACK_CONFIG_STORAGE_KEY, trackConfigFromSettings } from "@/shared/track-config";
+import { unsupportedReason } from "@/shared/youtube";
 
 /** Without any word from the page script about a video this long, use the overlay. */
 const SILENT_PAGE_MS = 10_000;
@@ -94,6 +95,14 @@ export class CaptionTrackBridge {
    */
   heardSince(since: number): boolean {
     return this.verdict !== null && this.verdictAt >= since;
+  }
+
+  /**
+   * Why `videoId` (the video in the URL, on a page at `pathname`) gets no captions now (a
+   * Short, a live stream, an AI dub playing), or "".
+   */
+  offReason(videoId: string | null, pathname: string): string {
+    return unsupportedReason(pathname, this.isLive(videoId), this.isDubbed(videoId));
   }
 
   /** Whether the page script last said the player plays an AI dub for `videoId`. */

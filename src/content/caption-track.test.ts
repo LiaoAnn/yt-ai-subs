@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Cue } from "@/shared/captions";
 import { DEFAULT_SETTINGS } from "@/shared/settings";
+import { DUB_REASON } from "@/shared/youtube";
 import { CaptionTrackBridge } from "./caption-track";
 
 describe("CaptionTrackBridge.sync", () => {
@@ -56,5 +57,17 @@ describe("CaptionTrackBridge.isDubbed", () => {
     bridge.onVerdict(verdict("vid", true), 1000);
     expect(bridge.heardSince(1000)).toBe(true);
     expect(bridge.heardSince(1001)).toBe(false); // the source changed after it
+  });
+
+  it("turns captions off while the dub plays and on again for the original", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.offReason("vid", "/watch")).toBe("");
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.offReason("vid", "/watch")).toBe(DUB_REASON);
+    expect(bridge.offReason("other", "/watch")).toBe(""); // the verdict is about another video
+    bridge.onVerdict(verdict("vid", false));
+    expect(bridge.offReason("vid", "/watch")).toBe("");
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.offReason("vid", "/watch")).toBe(DUB_REASON);
   });
 });

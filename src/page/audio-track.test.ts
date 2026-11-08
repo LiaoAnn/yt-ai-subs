@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAutoDubbed } from "./audio-track";
+import { DubTracker, isAutoDubbed } from "./audio-track";
 
 // Shapes as `movie_player.getAudioTrack()` returned them on dZgXCAWnz2c (2026-11-08).
 const dub = {
@@ -31,5 +31,42 @@ describe("isAutoDubbed", () => {
     expect(isAutoDubbed({})).toBe(false);
     expect(isAutoDubbed(undefined)).toBeNull();
     expect(isAutoDubbed(null)).toBeNull();
+  });
+});
+
+describe("isAutoDubbed precedence", () => {
+  it("reads the flag when there is no id, and trusts it over the id", () => {
+    expect(isAutoDubbed({ Rb: { isAutoDubbed: true } })).toBe(true);
+    expect(isAutoDubbed({ Rb: { isAutoDubbed: false } })).toBe(false);
+    expect(isAutoDubbed({ ...original, Rb: { ...original.Rb, isAutoDubbed: true } })).toBe(true);
+    expect(isAutoDubbed({ ...dub, Rb: { ...dub.Rb, isAutoDubbed: false } })).toBe(false);
+    expect(isAutoDubbed({ id: original.id, isAutoDubbed: true })).toBe(true);
+  });
+});
+
+describe("DubTracker", () => {
+  it("follows the track per video: dub, switch to the original, back to the dub", () => {
+    const dubs = new DubTracker();
+    expect(dubs.observe("vid", false, null)).toBe(false); // no player yet
+    expect(dubs.observe("vid", false, true)).toBe(true);
+    expect(dubs.observe("vid", false, null)).toBe(true); // unknown changes nothing
+    expect(dubs.observe("vid", false, false)).toBe(false);
+    expect(dubs.observe("vid", false, true)).toBe(true);
+    expect(dubs.isDubbed("other")).toBe(false);
+    expect(dubs.isDubbed(null)).toBe(false);
+  });
+
+  it("keeps the video's track during an ad (the player reports the ad's)", () => {
+    const dubs = new DubTracker();
+    dubs.observe("vid", false, true);
+    expect(dubs.observe("vid", true, false)).toBe(true);
+    expect(dubs.observe("vid", false, true)).toBe(true);
+  });
+
+  it("remembers the most recently changed videos only", () => {
+    const dubs = new DubTracker();
+    for (let i = 0; i < 20; i++) dubs.observe(`v${i}`, false, true);
+    expect(dubs.isDubbed("v0")).toBe(false);
+    expect(dubs.isDubbed("v19")).toBe(true);
   });
 });
