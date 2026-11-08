@@ -79,11 +79,20 @@ const LIST_SEPARATOR = /[,，、/／·・|｜&＆\n]+|\s{2,}/u;
 const clean = (text: string) =>
   text.replace(URL_PATTERN, " ").replace(EMOJI, "").replace(/\s+/g, " ").trim();
 
-/** The title without hashtags, emoji and pure-ASCII tags in brackets like [ENG SUB]. */
+/** Subtitle and episode notes in a title's brackets: 〈字幕：English・簡体〉, [ENG SUB]. */
+const TITLE_NOTE = /字幕|자막|\bsub|\bcc\b|\beng\b|english|繁体|簡体|简体|繁體|中文|日本語|한국어/i;
+
+/**
+ * The title without hashtags, emoji, and bracketed notes: pure-ASCII tags like [ENG SUB]
+ * or (EP.12), and subtitle notes like 〈字幕：English・簡体〉. Whisper repeats such notes
+ * over music ("〈字幕〉") when they are in its prompt.
+ */
 export function cleanTitle(title: string): string {
   const text = clean(title.replace(HASHTAG, " "))
-    .replace(/[[(【「『〈<]([\x20-\x7e]*)[\])】」』〉>]/g, (match, inner: string) =>
-      /[a-z]/i.test(inner) ? " " : match,
+    .replace(/[[(（【「『〈《<]([^\])）】」』〉》>]*)[\])）】」』〉》>]/g, (match, inner: string) =>
+      (/^[\x20-\x7e]*$/.test(inner) && /[a-z]/i.test(inner)) || TITLE_NOTE.test(inner)
+        ? " "
+        : match,
     )
     .replace(/\s+/g, " ")
     .trim();

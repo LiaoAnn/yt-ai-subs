@@ -79,6 +79,10 @@ describe("cleanTitle", () => {
   it("drops hashtags, emoji and ASCII tags in brackets but keeps the rest", () => {
     expect(cleanTitle("🔥[ENG SUB] 지석진의 핑계 (EP.12) #핑계고")).toBe("지석진의 핑계");
     expect(cleanTitle("[핑계고] 오늘")).toBe("[핑계고] 오늘");
+    expect(cleanTitle("全員が恋愛対象｜Howling Love〈字幕：English・簡体・繁体・한국어〉")).toBe(
+      "全員が恋愛対象｜Howling Love",
+    );
+    expect(cleanTitle("[SUB][너의연애] 탐색전")).toBe("[너의연애] 탐색전");
   });
 });
 
