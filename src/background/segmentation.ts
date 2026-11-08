@@ -31,7 +31,7 @@ export interface WhisperVerboseJson {
   words?: WhisperWord[];
 }
 
-interface Word {
+export interface Word {
   text: string;
   start: number;
   end: number;
@@ -457,12 +457,20 @@ export function mergeHurriedLines(lines: readonly Cue[]): Cue[] {
   return out;
 }
 
-/**
- * Subtitle lines from a Whisper verbose_json response, unpadded: drops hallucinations and
- * probable non-speech, then groups each segment's words into lines (a segment of a few
- * characters joins its neighbour; a run-on segment is split into balanced lines).
- */
-export function whisperToLines(json: WhisperVerboseJson, context = ""): Cue[] {
+export interface SegmentDecision {
+  segment: WhisperSegment;
+  /** The words matched to this segment (by text position), with video-chunk times. */
+  words: Word[];
+  /** Why the segment is dropped (rejectReason), or "" when it is kept. */
+  reason: string;
+}
+
+/** Whisper's response as segments and words, the shape both segmentation steps share. */
+function parseResponse(json: WhisperVerboseJson): {
+  segments: WhisperSegment[];
+  words: Word[];
+  hasWordTimes: boolean;
+} {
   const segments: WhisperSegment[] = Array.isArray(json.segments)
     ? json.segments
     : json.text
@@ -475,20 +483,22 @@ export function whisperToLines(json: WhisperVerboseJson, context = ""): Cue[] {
       end: Number(w.end),
     }))
     .filter((w) => w.text.trim() && Number.isFinite(w.start) && Number.isFinite(w.end));
+  return { segments, words, hasWordTimes: Array.isArray(json.words) };
+}
 
-  const lines: Cue[] = [];
-  let stream: Word[] = [];
-  const flush = () => {
-    lines.push(...groupWords(stream).filter((cue) => !isHallucination(cue.original)));
-    stream = [];
-  };
-  const hasWordTimes = Array.isArray(json.words);
+/**
+ * Keeps or drops each segment of a Whisper response (after merging broken segments), with
+ * the words that belong to it. whisperToLines builds the lines from the kept ones; the
+ * offline evaluation (src/qa/) scores the decisions against ground truth.
+ */
+export function segmentDecisions(json: WhisperVerboseJson, context = ""): SegmentDecision[] {
+  const { segments, words, hasWordTimes } = parseResponse(json);
   const merged = mergeBrokenSegments(segments);
   const repetitive = repetitiveFallbacks(merged);
   const owned = wordsBySegment(merged, words);
   let previous = "";
   let repeats = 0;
-  for (const [index, segment] of merged.entries()) {
+  return merged.map((segment, index) => {
     const text = segment.text;
     // Segment times often start early (they snap to the previous segment's end); the
     // words inside the segment give the real timing.
@@ -501,6 +511,24 @@ export function whisperToLines(json: WhisperVerboseJson, context = ""): Cue[] {
       repeats,
       repetitive: repetitive.has(segment),
     });
+    return { segment, words: inside, reason };
+  });
+}
+
+/**
+ * Subtitle lines from a Whisper verbose_json response, unpadded: drops hallucinations and
+ * probable non-speech, then groups each segment's words into lines (a segment of a few
+ * characters joins its neighbour; a run-on segment is split into balanced lines).
+ */
+export function whisperToLines(json: WhisperVerboseJson, context = ""): Cue[] {
+  const lines: Cue[] = [];
+  let stream: Word[] = [];
+  const flush = () => {
+    lines.push(...groupWords(stream).filter((cue) => !isHallucination(cue.original)));
+    stream = [];
+  };
+  for (const { segment, words: inside, reason } of segmentDecisions(json, context)) {
+    const text = segment.text;
     if (reason) {
       flush(); // never join lines across a dropped segment
       continue;
