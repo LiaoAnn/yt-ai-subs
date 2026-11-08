@@ -3,11 +3,12 @@
 //
 // Loudness alone cannot tell a voice from background music, which is just as loud. Speech
 // keeps most of its energy in 300–3400 Hz and switches on and off with syllables a few
-// times a second; music spreads wider and holds steadier. A low voice is the exception: its
-// fundamental (100–300 Hz) can carry most of its energy, so it is also accepted when
-// 150–3400 Hz holds nearly all the energy and the band rises and falls like syllables
-// (music's bass sits below 150 Hz, and music does not stop between syllables). The
-// thresholds are tuned on debug captures (see the test-extension-in-browser skill).
+// times a second. A frame counts as voiced when that band is tonal (not noise-like) and
+// either dominates the spectrum or rises and falls like syllables. The second rule covers a
+// low voice (fundamental below 300 Hz) and talk over music; much music swings too, so it
+// leans towards sending, and the filters after Whisper (src/background/segmentation.ts)
+// drop what Whisper makes up there. The thresholds are tuned on the evaluation set
+// (src/qa/, the test-extension-in-browser skill).
 
 export const VOICE_FRAME_SECONDS = 0.02;
 const FFT_SIZE = 512; // 32 ms at 16 kHz
@@ -54,7 +55,8 @@ export interface VoiceFeatures {
   bandShare: number[];
   /** Spectral flatness in 300–3400 Hz, percent (100 = noise-like, near 0 = tonal). */
   flatness: number[];
-  /** Share of the frame's energy in 150–3400 Hz, percent (absent in older captures). */
+  /** Share of the frame's energy in 150–3400 Hz, percent (absent in older captures; kept for
+   * the evaluation's captures, not used by the decision). */
   wideShare?: number[];
 }
 
@@ -108,43 +110,43 @@ export function voiceFeatures(samples: Float32Array, sampleRate: number): VoiceF
   return out;
 }
 
-/** A frame looks voiced when the speech band dominates and the spectrum is not noise-like. */
+/**
+ * A frame looks voiced when its 300–3400 Hz spectrum is not noise-like and either that band
+ * dominates, or the frame is audible and the band's level spans at least SYLLABLE_SWING_DB
+ * within SYLLABLE_SWING_FRAMES frames either side: syllables switching on and off, whatever
+ * else the spectrum holds (a low voice whose fundamental holds most of the energy, talk over
+ * music). Held music and silence do not swing.
+ */
 const VOICED_MIN_SHARE = 45;
 const VOICED_MAX_FLATNESS = 30;
-/**
- * Or (a low voice) when 150–3400 Hz holds at least this share and the speech band's level
- * spans at least LOW_VOICE_SWING_DB within LOW_VOICE_SWING_FRAMES frames either side.
- */
-const LOW_VOICE_MIN_WIDE_SHARE = 70;
-const LOW_VOICE_SWING_DB = 24;
-const LOW_VOICE_SWING_FRAMES = 12;
+const SYLLABLE_MIN_BAND_DB = -60;
+const SYLLABLE_SWING_DB = 15;
+const SYLLABLE_SWING_FRAMES = 12;
 /** Window over which voiced frames are counted (seconds). */
 const VOICE_WINDOW_SECONDS = 3;
 /**
- * A chunk is sent only if some window has at least this share of voiced frames. Tuned on six
- * videos: talk (news, variety, idol talk) never scored below 0.51, BGM-only stretches of
- * vlogs scored 0.24–0.45. A low male voice (cth3M1iavGM) scored 0.27–0.55 with the speech
- * band alone, 0.54 and up with the low-voice rule; the BGM vlog's scores did not change.
+ * A chunk is sent only if some window has at least this share of voiced frames. Tuned on the
+ * evaluation set (src/qa/dataset.ts), see AGENTS.md "Voice activity".
  */
 export const MIN_VOICED_SHARE = 0.45;
 
 /** The highest share of voiced frames in any VOICE_WINDOW_SECONDS window (0–1). */
 export function bestVoicedWindow(features: VoiceFeatures): number {
-  const { band, bandShare, flatness, wideShare } = features;
+  const { band, bandShare, flatness } = features;
   const swings = (i: number) => {
     let min = Infinity;
     let max = -Infinity;
-    const to = Math.min(band.length - 1, i + LOW_VOICE_SWING_FRAMES);
-    for (let j = Math.max(0, i - LOW_VOICE_SWING_FRAMES); j <= to; j++) {
+    const to = Math.min(band.length - 1, i + SYLLABLE_SWING_FRAMES);
+    for (let j = Math.max(0, i - SYLLABLE_SWING_FRAMES); j <= to; j++) {
       min = Math.min(min, band[j]!);
       max = Math.max(max, band[j]!);
     }
-    return max - min >= LOW_VOICE_SWING_DB;
+    return max - min >= SYLLABLE_SWING_DB;
   };
   const voiced = bandShare.map((share, i) => {
     if (flatness[i]! > VOICED_MAX_FLATNESS) return 0;
     if (share >= VOICED_MIN_SHARE) return 1;
-    return (wideShare?.[i] ?? 0) >= LOW_VOICE_MIN_WIDE_SHARE && swings(i) ? 1 : 0;
+    return band[i]! >= SYLLABLE_MIN_BAND_DB && swings(i) ? 1 : 0;
   });
   const width = Math.round(VOICE_WINDOW_SECONDS / VOICE_FRAME_SECONDS);
   if (voiced.length <= width) {

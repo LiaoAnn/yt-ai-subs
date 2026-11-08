@@ -77,10 +77,14 @@ interface Evaluated {
 function truthOf(gt: GroundTruth, video: DatasetVideo): { speech: SpeechTruth; caption: Truth } {
   if (video.noSpeech) {
     // Nobody talks: every chunk is a no-speech chunk, every kept line is made up.
+    // Stretches where someone talks after all are unsure: neither speech nor no speech.
     const supports = { cer: false, recall: false, precision: true, translation: false };
+    const unsure = (video.speechSpans ?? []).map(([start, end]) => ({ start, end }));
     return {
-      speech: { speech: [], lines: [], anySpeech: [], precision: true },
-      caption: { speech: [], lines: [], anySpeech: [], reference: null, supports },
+      // No chunk can hold speech, so chunk precision says nothing (and would count the
+      // unsure stretches as misses); the no-speech chunk counts still apply.
+      speech: { speech: [], lines: [], anySpeech: unsure, precision: false },
+      caption: { speech: [], lines: [], anySpeech: unsure, reference: null, supports },
     };
   }
   const lines = gt.supports.recall ? gt.lines : [];
