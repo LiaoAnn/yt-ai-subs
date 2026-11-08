@@ -20,6 +20,7 @@ function describe(state: State): string {
   if (!state.reply.videoId) return "這個分頁沒有在看影片";
   if (mode === "cc") return "YouTube 字幕選單（CC）";
   if (mode === "overlay") return `備用疊加字幕${reason ? `（${reason}）` : ""}`;
+  if (mode === "creator") return `創作者上傳的字幕${reason ? `「${reason}」` : ""}（不使用 AI）`;
   return "確認中…";
 }
 

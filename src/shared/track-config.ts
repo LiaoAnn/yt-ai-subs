@@ -16,12 +16,18 @@ export interface TrackConfig {
   label: string;
   /** BCP-47 code of the track's main text. */
   languageCode: string;
+  /** The track is a translation (else it shows the spoken language). */
+  translate: boolean;
+  /** The spoken language setting ("auto" or a code), to find the creator's own track. */
+  sourceLanguage: string;
 }
 
 export const DEFAULT_TRACK_CONFIG: TrackConfig = {
   enabled: true,
   label: "AI 繁中",
   languageCode: "zh-TW",
+  translate: true,
+  sourceLanguage: "ja",
 };
 
 const TARGET_LABELS: Record<string, string> = { "zh-TW": "AI 繁中", en: "AI 英文" };
@@ -32,12 +38,16 @@ export function trackConfigFromSettings(settings: Settings): TrackConfig {
       enabled: settings.enabled,
       label: TARGET_LABELS[settings.targetLanguage] ?? "AI 翻譯",
       languageCode: settings.targetLanguage,
+      translate: true,
+      sourceLanguage: settings.sourceLanguage,
     };
   }
   return {
     enabled: settings.enabled,
     label: "AI 原文",
     languageCode: settings.sourceLanguage === "auto" ? "und" : settings.sourceLanguage,
+    translate: false,
+    sourceLanguage: settings.sourceLanguage,
   };
 }
 
@@ -58,6 +68,13 @@ export function parseTrackConfig(raw: string | null): TrackConfig {
         /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(value.languageCode)
           ? value.languageCode
           : DEFAULT_TRACK_CONFIG.languageCode,
+      translate:
+        typeof value.translate === "boolean" ? value.translate : DEFAULT_TRACK_CONFIG.translate,
+      sourceLanguage:
+        typeof value.sourceLanguage === "string" &&
+        /^(auto|[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*)$/.test(value.sourceLanguage)
+          ? value.sourceLanguage
+          : DEFAULT_TRACK_CONFIG.sourceLanguage,
     };
   } catch {
     return DEFAULT_TRACK_CONFIG;
