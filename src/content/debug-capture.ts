@@ -20,8 +20,12 @@ export interface DebugCapture {
   sentSeconds: number;
   whisperModel: string;
   sourceLanguage: string;
-  /** The context sent along (Whisper's prompt is its last 200 characters). */
+  /** Whisper's prompt: the video's title, channel and terms, then the recent captions. */
   context: string;
+  /** Glossary entries sent with the translation request, if any. */
+  glossary?: [string, string][];
+  /** Terms the translator reported for this chunk. */
+  terms?: Record<string, unknown>;
   /** Whisper's verbose_json response, times relative to `start`. */
   raw: unknown;
   /** Loudness of the audio sent, dBFS per `frameSeconds`, from `start`. */

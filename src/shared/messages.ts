@@ -7,6 +7,7 @@
 
 import type { Cue, Json3Event } from "./captions";
 import type { QuotaLevels } from "./quota";
+import type { VideoInfo } from "./video-context";
 
 /** Tag on every window message, so the content script ignores YouTube's own messages. */
 export const PAGE_MESSAGE_TAG = "__ytAiSubs";
@@ -58,6 +59,12 @@ export interface CaptionModeMessage extends Tagged {
   live?: boolean;
 }
 
+/** Title, channel, description and tags of a video, from a player response. */
+export interface VideoInfoMessage extends Tagged {
+  type: "video-info";
+  info: VideoInfo;
+}
+
 /**
  * What the page script knows about the creator's own caption tracks for a video
  * (src/page/creator-hooks.ts), in reply to a GetCreatorCaptionsCommand:
@@ -90,6 +97,7 @@ export type PageMessage =
   | AudioBufferMessage
   | SegmentMessage
   | CaptionModeMessage
+  | VideoInfoMessage
   | CreatorCaptionsMessage;
 
 const DISPLAY_MODES: readonly unknown[] = [
@@ -157,6 +165,19 @@ export function isPageMessage(data: unknown): data is PageMessage {
         typeof message.reason === "string" &&
         (message.live === undefined || typeof message.live === "boolean")
       );
+    case "video-info": {
+      const info = message.info as Record<string, unknown> | null;
+      return (
+        typeof info === "object" &&
+        info !== null &&
+        typeof info.videoId === "string" &&
+        typeof info.title === "string" &&
+        typeof info.channel === "string" &&
+        typeof info.description === "string" &&
+        Array.isArray(info.keywords) &&
+        info.keywords.every((k) => typeof k === "string")
+      );
+    }
     case "creator-captions":
       return (
         typeof message.videoId === "string" &&
@@ -222,7 +243,10 @@ export interface TranscribeMessage {
   /** 16 kHz mono WAV, base64 (runtime messages are JSON, so no ArrayBuffers). */
   wavBase64: string;
   durationSeconds: number;
-  /** Recent original-language text, given to Whisper as a prompt. */
+  /**
+   * Whisper's prompt: the video's title, channel and terms, then the recent captions
+   * (buildWhisperPrompt).
+   */
   context: string;
 }
 
@@ -233,6 +257,10 @@ export interface TranslateMessage {
   lines: string[];
   /** Previous lines ("original → translation" when translated), for context only. */
   context: string;
+  /** The video's title and channel, for context. */
+  video?: { title: string; channel: string };
+  /** Renderings already used in this video for terms in these lines (source, translation). */
+  glossary?: [string, string][];
 }
 
 export interface CancelMessage {
@@ -301,5 +329,11 @@ export type TranscribeReply =
   | FailedReply;
 
 export type TranslateReply =
-  | ({ ok: true; lines: string[]; totalTokens: number } & CallTimings)
+  | ({
+      ok: true;
+      lines: string[];
+      totalTokens: number;
+      /** Names and terms the translator says it translated: source -> translation. */
+      terms: Record<string, unknown>;
+    } & CallTimings)
   | FailedReply;

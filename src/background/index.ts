@@ -57,6 +57,25 @@ async function currentLevels(): Promise<QuotaLevels> {
   return quotaLevels(limiter.snapshot(), ledger, Date.now());
 }
 
+/** The message's video title and channel, if well-formed. */
+function validVideo(value: unknown): { title: string; channel: string } | undefined {
+  const video = value as { title?: unknown; channel?: unknown } | null | undefined;
+  if (typeof video?.title !== "string" || typeof video.channel !== "string") return undefined;
+  return { title: video.title, channel: video.channel };
+}
+
+/** The message's glossary entries that are pairs of strings. */
+function validGlossary(value: unknown): [string, string][] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is [string, string] =>
+      Array.isArray(entry) &&
+      entry.length === 2 &&
+      typeof entry[0] === "string" &&
+      typeof entry[1] === "string",
+  );
+}
+
 /** In-flight requests by "<tabId>:<requestId>", so the content script can cancel them. */
 const inFlight = new Map<string, AbortController>();
 
@@ -136,11 +155,13 @@ async function handle(
       signal,
       changed,
       (cost) => noteBilled(ledger, "chat", videoId, cost),
+      { video: validVideo(message.video), glossary: validGlossary(message.glossary) },
     );
     return {
       ok: true,
       lines: result.lines,
       totalTokens: result.totalTokens,
+      terms: result.terms,
       ...result.stats,
       quota: await currentLevels(),
     };
