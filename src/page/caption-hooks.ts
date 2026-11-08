@@ -389,7 +389,8 @@ function control() {
   let lastDebug = 0;
   let lastReloadCall = 0;
 
-  setInterval(() => {
+  /** One control step; `force` posts the verdict even when it did not change. */
+  const step = (force = false) => {
     const player = document.getElementById("movie_player") as YtPlayer | null;
     let videoId: string | null = null;
     let inTracklist = false;
@@ -523,7 +524,7 @@ function control() {
     const live = videoId !== null && liveVideos.has(videoId);
     const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live, dubbed]);
     // Repeat now and then, in case the content script missed it (it loads after us).
-    if (key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
+    if (force || key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
       const changed = key !== lastPosted;
       lastPosted = key;
       lastPostedAt = Date.now();
@@ -549,7 +550,18 @@ function control() {
       const info = videoId ? videoInfos.get(videoId) : undefined;
       if (info) postVideoInfo(info);
     }
-  }, CONTROL_MS);
+  };
+  setInterval(step, CONTROL_MS);
+  // Switching the audio track swaps the <video>'s MediaSource ("emptied"), and
+  // getAudioTrack() already names the new track then: say so at once, so the content script
+  // sends no chunk in between (it holds chunks from "emptied" until this verdict).
+  document.addEventListener(
+    "emptied",
+    (event) => {
+      if (event.target === document.querySelector("#movie_player video")) step(true);
+    },
+    true,
+  );
 }
 
 export function installCaptionTrack(observePlayerResponse: (response: unknown) => void) {

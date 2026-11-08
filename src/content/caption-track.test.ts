@@ -49,4 +49,12 @@ describe("CaptionTrackBridge.isDubbed", () => {
     bridge.onVerdict(verdict("vid")); // an older page script without the field
     expect(bridge.isDubbed("vid")).toBe(false);
   });
+
+  it("says whether the page script spoke since a source change", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.heardSince(0)).toBe(false);
+    bridge.onVerdict(verdict("vid", true), 1000);
+    expect(bridge.heardSince(1000)).toBe(true);
+    expect(bridge.heardSince(1001)).toBe(false); // the source changed after it
+  });
 });

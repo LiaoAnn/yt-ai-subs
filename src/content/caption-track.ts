@@ -29,6 +29,8 @@ function syncKey(videoId: string, version: number, settings: Settings): string {
 export class CaptionTrackBridge {
   private lastSent = "";
   private verdict: CaptionModeMessage | null = null;
+  /** When the last verdict arrived (ms). */
+  private verdictAt = 0;
   /** The video in the URL and when this script first asked about it. */
   private seen: { videoId: string; at: number } | null = null;
 
@@ -63,9 +65,10 @@ export class CaptionTrackBridge {
     window.postMessage(command, location.origin);
   }
 
-  onVerdict(message: CaptionModeMessage): void {
+  onVerdict(message: CaptionModeMessage, now = Date.now()): void {
     const previous = this.verdict;
     this.verdict = message;
+    this.verdictAt = now;
     if (
       message.mode !== previous?.mode ||
       message.videoId !== previous?.videoId ||
@@ -82,6 +85,15 @@ export class CaptionTrackBridge {
   /** Whether the page script saw `videoId`'s player response say it is a live stream. */
   isLive(videoId: string | null): boolean {
     return videoId !== null && this.verdict?.videoId === videoId && this.verdict.live === true;
+  }
+
+  /**
+   * Whether a verdict arrived at or after `since` (ms). The page script posts one when the
+   * <video>'s source changes ("emptied", e.g. an audio-track switch); until it arrives, the
+   * dub verdict may be stale.
+   */
+  heardSince(since: number): boolean {
+    return this.verdict !== null && this.verdictAt >= since;
   }
 
   /** Whether the page script last said the player plays an AI dub for `videoId`. */

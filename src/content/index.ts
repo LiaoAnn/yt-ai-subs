@@ -64,7 +64,7 @@ import {
   type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
-import { schedulingPause } from "./watching";
+import { awaitingTrackVerdict, schedulingPause } from "./watching";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
 console.log(LOG_PREFIX, "content script loaded (isolated world)", document.readyState);
@@ -291,7 +291,22 @@ const pauseReason = () =>
       document.pictureInPictureElement != null ||
       (window as { documentPictureInPicture?: { window: Window | null } }).documentPictureInPicture
         ?.window != null,
+    trackPending: awaitingTrackVerdict(
+      sourceChangedAt,
+      captionTrack.heardSince(sourceChangedAt),
+      Date.now(),
+    ),
   });
+
+/** When the player's <video> last changed its source ("emptied"; an audio-track switch). */
+let sourceChangedAt = 0;
+document.addEventListener(
+  "emptied",
+  (event) => {
+    if (event.target === video()) sourceChangedAt = Date.now();
+  },
+  true,
+);
 
 function newVideoState(videoId: string): VideoState {
   return {
@@ -975,7 +990,8 @@ function tick() {
   // say so rather than "no audio yet".
   const pause = pauseReason();
   if (!target) {
-    diag.reason = pause ?? "還沒收到這支影片的音訊";
+    // A dub from the start: the page script passes on no audio, so there is no state yet.
+    diag.reason = pause ?? (unsupported(videoIdFromUrl(location.href)) || "還沒收到這支影片的音訊");
     return;
   }
   // Before any early return: audio piles up while nothing is sent (off, no key). Not during
