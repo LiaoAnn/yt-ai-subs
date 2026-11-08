@@ -203,6 +203,73 @@ describe("cache edge cases", () => {
   });
 });
 
+const jsonSize = (items: Map<string, unknown>) =>
+  [...items].reduce((sum, [k, v]) => sum + k.length + JSON.stringify(v).length, 0);
+
+/** A storage area that holds at most `limit` bytes of JSON, like chrome.storage.local. */
+function limitedStorage(limit: number, initial: Record<string, unknown>) {
+  const fake = fakeStorage(initial);
+  const set = fake.storage.set.bind(fake.storage);
+  fake.storage.set = async (items) => {
+    const next = new Map(fake.data);
+    for (const [k, v] of Object.entries(items)) next.set(k, v);
+    if (jsonSize(next) > limit) throw new Error("QUOTA_BYTES quota exceeded");
+    await set(items);
+  };
+  return fake;
+}
+
+const bigEntry = (savedAt: number, cues: number): CacheEntry => ({
+  chunks: [{ start: 0, end: cues * 3 }],
+  cues: Array.from({ length: cues }, (_, i) => ({
+    start: i * 3,
+    end: i * 3 + 2,
+    original: "長い動画の字幕です",
+    translation: "長影片的字幕",
+  })),
+  savedAt,
+});
+
+describe("saveCache with a full storage area", () => {
+  it("evicts only as many of the oldest entries as it takes, with few entries", async () => {
+    const now = Date.now();
+    const initial: Record<string, unknown> = {};
+    for (let i = 0; i < 5; i++) {
+      initial[`cache:v${i}:x`] = bigEntry(now - 1000 + i, 400);
+      initial[metaKeyOf(`cache:v${i}:x`)] = now - 1000 + i;
+    }
+    const perEntry = JSON.stringify(bigEntry(now, 400)).length;
+    // Room for five and a half entries: a long video (two entries' worth) needs two
+    // evictions (a first try with one is not enough).
+    const { storage, data } = limitedStorage(perEntry * 5.5, initial);
+    await saveCache("cache:long:x", bigEntry(now, 800), storage);
+    expect(entryKeys(data)).toEqual(["cache:long:x", "cache:v2:x", "cache:v3:x", "cache:v4:x"]);
+    expect(metaKeys(data)).toEqual(entryKeys(data).map(metaKeyOf).toSorted());
+  });
+
+  it("keeps an earlier copy of the entry being saved while it makes room", async () => {
+    const now = Date.now();
+    // The older copy of "long" is older than "other", but only "other" may go.
+    const { storage, data } = limitedStorage(JSON.stringify(bigEntry(now, 500)).length * 2, {
+      "cache:long:x": bigEntry(now - 10, 300),
+      [metaKeyOf("cache:long:x")]: now - 10,
+      "cache:other:x": bigEntry(now - 5, 500),
+      [metaKeyOf("cache:other:x")]: now - 5,
+    });
+    await saveCache("cache:long:x", bigEntry(now, 600), storage);
+    expect(entryKeys(data)).toEqual(["cache:long:x"]);
+    expect((data.get("cache:long:x") as CacheEntry).cues).toHaveLength(600);
+  });
+
+  it("gives up when the entry does not fit even alone", async () => {
+    const { storage, data } = limitedStorage(1000, {});
+    await expect(saveCache("cache:huge:x", bigEntry(Date.now(), 100), storage)).rejects.toThrow(
+      "QUOTA_BYTES",
+    );
+    expect(entryKeys(data)).toEqual([]);
+  });
+});
+
 describe("isExpired", () => {
   it("rejects entries older than the maximum age, or without a valid time", () => {
     expect(isExpired({ savedAt: 1000 }, 1000 + CACHE_MAX_AGE_MS)).toBe(false);

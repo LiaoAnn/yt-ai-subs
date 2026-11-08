@@ -94,7 +94,9 @@ export async function loadCache(
 
 /**
  * Saves one entry with its meta key in a single write, then evicts. If the write fails
- * (storage full), evicts first and tries once more, so a full storage area recovers.
+ * (storage full: chrome.storage.local holds 10 MB, and a long translated video's entry is
+ * a few hundred KB), evicts the oldest entries, one more each time and then doubling, until
+ * it fits, so a full storage area recovers however few entries it holds.
  */
 export async function saveCache(
   key: string,
@@ -105,8 +107,19 @@ export async function saveCache(
   try {
     await storage.set(items);
   } catch {
-    await evict(entry.savedAt, storage, CACHE_MAX_ENTRIES - 1);
-    await storage.set(items);
+    const others = (await listKeys(storage)).filter(
+      (other) => other.startsWith(CACHE_PREFIX) && other !== key,
+    ).length;
+    for (let drop = 1; ; drop *= 2) {
+      const keep = Math.max(0, Math.min(CACHE_MAX_ENTRIES - 1, others - drop));
+      await evict(entry.savedAt, storage, keep, key);
+      try {
+        await storage.set(items);
+        break;
+      } catch (error) {
+        if (keep === 0) throw error; // too big even alone
+      }
+    }
   }
   await evict(entry.savedAt, storage);
 }
@@ -120,6 +133,8 @@ export async function evict(
   now: number,
   storage: CacheStorage = local(),
   maxEntries = CACHE_MAX_ENTRIES,
+  /** An entry being saved: neither counted nor evicted. */
+  except?: string,
 ): Promise<void> {
   const keys = await listKeys(storage);
   const metaKeys = keys.filter((key) => key.startsWith(CACHE_META_PREFIX));
@@ -146,6 +161,7 @@ export async function evict(
     if (keys.includes(LEGACY_INDEX_KEY)) await storage.remove(LEGACY_INDEX_KEY);
   }
 
+  if (except) delete index[except];
   const candidates = selectEvictions(index, now, maxEntries);
   if (!candidates.length) return;
   // Another tab may have saved one of them meanwhile (a fresh savedAt): keep those.
