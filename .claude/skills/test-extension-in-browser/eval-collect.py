@@ -406,7 +406,7 @@ def dry(session, root, ids, gt_only=False):
 # A 429 from Groq, as the extension logs it ("Groq 429 on whisper", "語音辨識失敗 429"), not
 # a 429 in some number of a state line.
 TOO_MANY = __import__("re").compile(r"Groq 429|失敗 429")
-CAPS = {"requests": 500, "audio": 14400, "tokens": 50000}
+CAPS = {"requests": 560, "audio": 14400, "tokens": 50000}
 
 
 def usage_of(lines, captures):
@@ -435,8 +435,9 @@ def whisper(session, root, plan_path):
     # Runs set aside (e.g. .qa/old-dub/whisper/: captured while YouTube played an AI dub)
     # were billed too.
     files = [f"{root}/whisper/{n}" for n in os.listdir(f"{root}/whisper")]
-    if os.path.isdir(f"{root}/old-dub/whisper"):
-        files += [f"{root}/old-dub/whisper/{n}" for n in os.listdir(f"{root}/old-dub/whisper")]
+    for aside in ("old-dub/whisper", "ab/whisper", "old-prompt/whisper"):
+        if os.path.isdir(f"{root}/{aside}"):
+            files += [f"{root}/{aside}/{n}" for n in os.listdir(f"{root}/{aside}")]
     for path_ in files:
         prev = json.load(open(path_))
         r, a, t = usage_of(prev.get("log", []), prev.get("captures", {}))
