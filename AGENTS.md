@@ -9,6 +9,7 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
   - repeatable procedures (testing in the browser, releasing, debugging the audio hook) → a skill under `.claude/skills/<name>/SKILL.md`;
   - rules that can be checked mechanically → a lint rule or a test, not prose.
 - When a decision here changes, update this file in the same change.
+- Work is split across t3 threads: a supervisor hands tasks out with the `delegate-to-thread` skill, and a delegated thread works and reports with `run-delegated-task`. A brief that keeps repeating the same instructions means they belong in a skill.
 
 ## Product decisions
 
