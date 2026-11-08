@@ -173,8 +173,9 @@ function install() {
     if (!info || !source || !state || state.gate.kind === "ad")
       return appendBuffer.call(this, data);
     // An AI-dubbed track: none of its audio leaves the page (audio-track.ts). Switching the
-    // track makes YouTube create a new MediaSource that starts with init segments (2 of 2
-    // switches on dZgXCAWnz2c), so the original's audio comes complete after a switch back.
+    // track makes YouTube create a new MediaSource (8 of 8 switches on 4 videos) that starts
+    // with init segments (2 of 2 inspected), so the original's audio comes complete after a
+    // switch back.
     const dubbed = playerPlaysDub();
     if (state.dubbed === undefined || (dubbed === true) !== (state.dubbed === true)) {
       state.dubbed = dubbed;
