@@ -13,6 +13,12 @@ You were started by the supervisor thread named in your brief. Do the work yours
 2. Run `wt-status` with no argument to learn your worktree path, then pass that path to every `wt-*` command and to `git -C`.
 3. Reread the brief's "done" checks; they are what your report must prove.
 
+## Questions go to the supervisor, never to the user
+
+You do not talk to the user. Whenever you need a decision, information, a secret, an approval or anything else you would ask a person for, send the question to the supervisor with `t3_thread_send` and keep doing what does not depend on the answer. Do not call tools that prompt the user yourself: no `AskUserQuestion`, no `request_secret`, no `t3_pending_request` answers on someone's behalf. The supervisor often knows the answer already (where the Groq key is, what the user decided earlier); when only the user can decide, the supervisor asks them and replies to you.
+
+Write the question so it stands on its own: what you need, why, what you found so far, the options you see and the one you would pick.
+
 ## Approvals
 
 - External services (Groq, any paid API, any site other than YouTube): only what the brief approves, within its budget. Check the remaining daily budget before the first call; stop at a 429 or when the brief's floor is reached, and report.
@@ -25,7 +31,7 @@ You were started by the supervisor thread named in your brief. Do the work yours
 - Workers follow the five steps in `AGENTS.md`: plan, implement, Codex review, browser verification, then a PR that merges when CI passes.
 - Claim a cause only with a check that could have refuted it; count claims (k of n). Mark everything else as a guess.
 - Long runs go to `wt-bg … --script <file>` with `wt-wait`; nothing that needs a manual approval.
-- Stuck for more than 20 minutes, or need a decision only the user can make: send the question to the supervisor with `t3_thread_send` and keep doing what does not depend on the answer.
+- Stuck for more than 20 minutes: tell the supervisor with `t3_thread_send` what blocks you and what you tried.
 
 ## Report
 
