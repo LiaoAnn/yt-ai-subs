@@ -4,7 +4,10 @@
 import type { Cue } from "@/shared/captions";
 import { LOG_PREFIX } from "@/shared/log";
 import {
+  PAGE_COMMAND_TAG,
   isPageMessage,
+  type CreatorCaptionsMessage,
+  type GetCreatorCaptionsCommand,
   type DisplayModeReply,
   type QuotaReply,
   type RuntimeMessage,
@@ -24,6 +27,13 @@ import { videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
+import {
+  decideSource,
+  linesForChunk,
+  mergeCachedTranslations,
+  sourceSettingsKey,
+  type CaptionSource,
+} from "./creator-source";
 import { saveDebugCapture } from "./debug-capture";
 import { energyEnvelope, findQuietCut, isNearFloor } from "./energy";
 import { Overlay } from "./overlay";
@@ -34,6 +44,7 @@ import {
   nextNeeded,
   trimCutSentence,
   type Job,
+  type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
@@ -59,6 +70,17 @@ const CUT_EARLIER_SECONDS = 6;
 const CUT_LATER_SECONDS = 4;
 /** A chunk waits at most this long for the chunk before it, to use it as context. */
 const CONTEXT_WAIT_MS = 5000;
+/**
+ * Translating a creator track: all lines are known, so chunks are longer (fewer requests,
+ * each with the fixed prompt) and run further ahead.
+ */
+const CREATOR_SCHEDULE: ScheduleOptions = {
+  chunkSeconds: 60,
+  lookaheadSeconds: 120,
+  firstChunkSeconds: 20,
+  minChunkSeconds: 15,
+  maxTries: 3,
+};
 
 /**
  * The running chunk that ends where `job` starts, if any. During a start-up burst the next
@@ -95,6 +117,8 @@ interface JobRecord extends Job {
   untranslated: boolean;
   /** Its original lines are in (the next chunk can use them as Whisper's prompt). */
   transcribed?: boolean;
+  /** Creator-track lines this job translates (no other job takes them meanwhile). */
+  claimed?: Cue[];
 }
 
 interface VideoState {
@@ -109,6 +133,12 @@ interface VideoState {
   /** Bumped on every change to `cues` or their text; the CC track resends on a change. */
   cuesVersion: number;
   lastError: string;
+  /** Where the lines come from: decided per video and settings (creator-source.ts). */
+  source: CaptionSource;
+  /** sourceSettingsKey of the settings `source` was decided with. */
+  sourceKey: string;
+  /** Ad-free time spent deciding the source. */
+  decidingMs: number;
 }
 
 function setCues(target: VideoState, cues: Cue[]) {
@@ -140,6 +170,69 @@ function refreshQuota() {
     },
   );
 }
+/** The page script's latest word on each video's creator tracks. */
+const creatorReplies = new Map<string, CreatorCaptionsMessage>();
+
+function askCreatorCaptions(videoId: string) {
+  const command: GetCreatorCaptionsCommand = {
+    [PAGE_COMMAND_TAG]: true,
+    type: "get-creator-captions",
+    videoId,
+  };
+  window.postMessage(command, location.origin);
+}
+
+/** Decides where the video's lines come from; asks the page script while undecided. */
+function resolveSource(target: VideoState) {
+  const key = sourceSettingsKey(settings);
+  if (target.source.kind !== "deciding" && target.sourceKey !== key) {
+    // Settings changed: decide again (syncCacheKey then resets the captions).
+    target.source = { kind: "deciding" };
+  }
+  if (target.source.kind !== "deciding") return;
+  target.sourceKey = key;
+  const decided = decideSource(creatorReplies.get(target.videoId), target.decidingMs, settings);
+  if (decided.kind === "deciding") {
+    if (!isAdShowing()) target.decidingMs += TICK_MS;
+    askCreatorCaptions(target.videoId);
+    return;
+  }
+  target.source = decided;
+  if (decided.kind === "whisper") {
+    console.log(LOG_PREFIX, `captions from Whisper for ${target.videoId}: ${decided.reason}`);
+  } else if (decided.kind === "target") {
+    console.log(
+      LOG_PREFIX,
+      `creator track "${decided.name}" in the target language for ${target.videoId}: nothing to transcribe or translate`,
+    );
+  } else {
+    console.log(
+      LOG_PREFIX,
+      `captions from the creator track for ${target.videoId}, no Whisper: ${decided.summary}`,
+    );
+  }
+}
+
+/**
+ * The page script's display mode, except for a video whose creator track replaced ours
+ * when the settings no longer want it (changed since the load): our track is not in the
+ * player then, so the captions go to the overlay.
+ */
+function displayMode(videoId: string | null): DisplayModeReply {
+  const reply = captionTrack.mode(videoId);
+  const target = currentState();
+  const kind = target?.source.kind;
+  if (
+    reply.mode === "creator" &&
+    target?.videoId === videoId &&
+    kind !== "target" &&
+    kind !== "deciding"
+  ) {
+    return { videoId, mode: "overlay", reason: "設定改了，AI 字幕軌要重新整理頁面後才會出現" };
+  }
+  return reply;
+}
+
 const overlay = new Overlay();
 const captionTrack = new CaptionTrackBridge();
 const diag = { pageReady: false, audioBuffers: 0, segments: 0, reason: "" };
@@ -177,6 +270,9 @@ function newVideoState(videoId: string): VideoState {
     cues: [],
     cuesVersion: 0,
     lastError: "",
+    source: { kind: "deciding" },
+    sourceKey: "",
+    decidingMs: 0,
   };
 }
 
@@ -191,6 +287,9 @@ window.addEventListener("message", (event) => {
     console.log(LOG_PREFIX, "content script got page message: page-ready");
   } else if (message.type === "caption-mode") {
     captionTrack.onVerdict(message);
+  } else if (message.type === "creator-captions") {
+    creatorReplies.set(message.videoId, message);
+    while (creatorReplies.size > 8) creatorReplies.delete(creatorReplies.keys().next().value!);
   } else if (message.type === "audio-buffer") {
     diag.audioBuffers++;
     console.log(LOG_PREFIX, "audio SourceBuffer:", message.mime);
@@ -243,13 +342,15 @@ function cancelRequests(ids: string[]) {
 
 /** Resets captions when the settings that shape them change, then loads the cache. */
 function syncCacheKey(target: VideoState) {
-  const key = cacheKey(target.videoId, settings);
+  const creator = target.source.kind === "creator" ? target.source : null;
+  const key = cacheKey(target.videoId, settings, creator?.languageCode);
   if (target.cacheKey === key) return;
   abortAll(target);
   target.cacheKey = key;
   target.cacheLoaded = false;
   target.jobs.clear();
-  setCues(target, []);
+  // The creator's lines are all there from the start; translations come per chunk.
+  setCues(target, creator ? creator.cues.map((cue) => ({ ...cue })) : []);
   target.lastError = "";
   overlay.clear();
   loadCache(key).then(
@@ -269,11 +370,15 @@ function syncCacheKey(target: VideoState) {
             untranslated: false,
           });
         }
-        target.cues.push(...entry.cues);
-        setCues(
-          target,
-          target.cues.toSorted((a, b) => a.start - b.start),
-        );
+        if (creator) {
+          setCues(target, mergeCachedTranslations(target.cues, entry.cues));
+        } else {
+          target.cues.push(...entry.cues);
+          setCues(
+            target,
+            target.cues.toSorted((a, b) => a.start - b.start),
+          );
+        }
         console.log(
           LOG_PREFIX,
           `cache hit: ${entry.chunks.length} chunks, ${entry.cues.length} cues`,
@@ -307,12 +412,114 @@ function persist(target: VideoState) {
 const inFlight = (target: VideoState) =>
   [...target.jobs.values()].filter((job) => job.controller !== null).length;
 
+/**
+ * Translates `fresh` (cues already in `target.cues`) in place. Returns false if the job was
+ * cancelled meanwhile (seek, other video, turned off); the caller then drops what it added.
+ * A failed or paused translation leaves the originals and marks the job untranslated.
+ */
+async function translateLines(
+  target: VideoState,
+  job: JobRecord,
+  fresh: Cue[],
+  before: JobRecord | undefined,
+  label: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (!settings.translate || !fresh.length) {
+    target.lastError = "";
+    return true;
+  }
+  if (translationPaused(quota)) {
+    // Keep the rest of the day's budget for the original captions.
+    job.untranslated = true;
+    target.lastError = TRANSLATION_PAUSED_MESSAGE;
+    return true;
+  }
+  // Translate with the chunk before already translated, so names and terms carry over.
+  if (before) {
+    await waitUntil(() => before.status !== "running", CONTEXT_WAIT_MS, signal);
+    if (signal.aborted || state !== target) return false;
+  }
+  const trRequest: RuntimeMessage = {
+    type: "translate",
+    requestId: requestIds(target, job)[1]!,
+    videoId: target.videoId,
+    lines: fresh.map((cue) => cue.original),
+    context: recentLines(target, Math.min(job.start, fresh[0]!.start))
+      .filter((cue) => !fresh.includes(cue))
+      .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
+      .join("\n"),
+  };
+  const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
+  if (signal.aborted || state !== target) return false;
+  if (tr?.ok) quota = tr.quota;
+  else if (tr?.quotaPaused) quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
+  if (tr?.ok) {
+    fresh.forEach((cue, i) => {
+      cue.translation = tr.lines[i] ?? cue.original;
+    });
+    target.cuesVersion++;
+    target.lastError = "";
+    console.log(
+      LOG_PREFIX,
+      `translation ${label}: ${fresh.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
+        (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
+    );
+  } else {
+    job.untranslated = true;
+    target.lastError = tr ? tr.error : "翻譯沒有回應";
+    console.warn(LOG_PREFIX, `translation ${label} failed:`, target.lastError);
+  }
+  return true;
+}
+
+/** Translates the creator-track lines of one chunk (no audio, no Whisper). */
+async function runCreatorJob(target: VideoState, job: JobRecord) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  job.controller = controller;
+  job.status = "running";
+  const label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s (creator track)`;
+  try {
+    job.transcribed = true;
+    const before = runningPredecessor(target, job);
+    // Later rounds pick up lines another chunk had claimed and then dropped (a seek
+    // cancelled it), so a finished chunk never leaves one of its lines untranslated.
+    for (let round = 0; round < 3; round++) {
+      const taken = new Set<Cue>();
+      for (const other of target.jobs.values()) {
+        if (other !== job && other.status === "running")
+          other.claimed?.forEach((cue) => taken.add(cue));
+      }
+      const fresh = linesForChunk(target.cues, job.start, job.end, taken);
+      if (round > 0 && !fresh.length) break;
+      job.claimed = fresh;
+      const wait = round === 0 ? before : undefined;
+      if (!(await translateLines(target, job, fresh, wait, label, signal))) return;
+      if (job.untranslated || !settings.translate) break;
+    }
+    job.status = "done";
+    persist(target);
+  } catch (error) {
+    if (signal.aborted || state !== target) return;
+    job.status = "error";
+    job.tries++;
+    job.retryAt = Date.now() + RETRY_BASE_MS * job.tries;
+    target.lastError = error instanceof Error ? error.message : String(error);
+    console.warn(LOG_PREFIX, `chunk ${label} failed:`, target.lastError);
+  } finally {
+    job.controller = null;
+    job.claimed = undefined;
+    if (signal.aborted && job.status === "running") target.jobs.delete(job.id);
+  }
+}
+
 async function runJob(target: VideoState, job: JobRecord, videoDuration: number) {
   const controller = new AbortController();
   const { signal } = controller;
   job.controller = controller;
   job.status = "running";
-  const [asrId, trId] = requestIds(target, job);
+  const [asrId] = requestIds(target, job);
   let label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s`;
   try {
     // A flexible end is a target: render a little past it (as far as audio is buffered)
@@ -446,65 +653,12 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
     );
     job.transcribed = true;
 
-    if (settings.translate && fresh.length && translationPaused(quota)) {
-      // Keep the rest of the day's budget for the original captions.
-      job.untranslated = true;
-      target.lastError = TRANSLATION_PAUSED_MESSAGE;
-    } else if (settings.translate && fresh.length) {
-      // Translate with the chunk before already translated, so names and terms carry over.
-      if (before) {
-        contextWaitMs += await waitUntil(
-          () => before.status !== "running",
-          CONTEXT_WAIT_MS,
-          signal,
-        );
-        if (signal.aborted || state !== target) {
-          // Cancelled while waiting (seek, other video, turned off): send nothing.
-          setCues(
-            target,
-            target.cues.filter((cue) => !fresh.includes(cue)),
-          );
-          return;
-        }
-      }
-      const trRequest: RuntimeMessage = {
-        type: "translate",
-        requestId: trId!,
-        videoId: target.videoId,
-        lines: fresh.map((cue) => cue.original),
-        context: recentLines(target, job.start)
-          .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
-          .join("\n"),
-      };
-      const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
-      if (signal.aborted || state !== target) {
-        setCues(
-          target,
-          target.cues.filter((cue) => !fresh.includes(cue)),
-        );
-        return;
-      }
-      if (tr?.ok) quota = tr.quota;
-      else if (tr?.quotaPaused)
-        quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
-      if (tr?.ok) {
-        fresh.forEach((cue, i) => {
-          cue.translation = tr.lines[i] ?? cue.original;
-        });
-        target.cuesVersion++;
-        target.lastError = "";
-        console.log(
-          LOG_PREFIX,
-          `translation ${label}: ${fresh.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
-            (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
-        );
-      } else {
-        job.untranslated = true;
-        target.lastError = tr ? tr.error : "翻譯沒有回應";
-        console.warn(LOG_PREFIX, `translation ${label} failed:`, target.lastError);
-      }
-    } else {
-      target.lastError = "";
+    if (!(await translateLines(target, job, fresh, before, label, signal))) {
+      setCues(
+        target,
+        target.cues.filter((cue) => !fresh.includes(cue)),
+      );
+      return;
     }
     job.status = "done";
     persist(target);
@@ -536,10 +690,10 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
 }
 
 /** Cancels running jobs a seek made irrelevant. */
-function cancelIrrelevant(target: VideoState, t: number) {
+function cancelIrrelevant(target: VideoState, t: number, options = DEFAULT_SCHEDULE) {
   const ids: string[] = [];
   for (const job of target.jobs.values()) {
-    if (job.status !== "running" || !job.controller || !isIrrelevant(job, t)) continue;
+    if (job.status !== "running" || !job.controller || !isIrrelevant(job, t, options)) continue;
     console.log(
       LOG_PREFIX,
       `cancel ${job.start.toFixed(1)}–${job.end.toFixed(1)} s (playhead ${t.toFixed(1)} s)`,
@@ -550,6 +704,42 @@ function cancelIrrelevant(target: VideoState, t: number) {
     target.jobs.delete(job.id);
   }
   if (ids.length) cancelRequests(ids);
+}
+
+/** Creator-track lines: translate them chunk by chunk ahead of the playhead. */
+function scheduleCreator(target: VideoState, v: HTMLVideoElement) {
+  const t = v.currentTime;
+  const duration = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity;
+  // The audio is not needed: drop it all.
+  target.store.prune(t, () => true, 0);
+  if (!settings.translate) {
+    diag.reason = "使用創作者字幕（不翻譯）";
+    return;
+  }
+  cancelIrrelevant(target, t, CREATOR_SCHEDULE);
+  for (let guard = 0; inFlight(target) < MAX_PARALLEL_JOBS && guard < 4; guard++) {
+    const next = nextNeeded([...target.jobs.values()], t, duration, Date.now(), CREATOR_SCHEDULE);
+    if (!next) {
+      diag.reason = inFlight(target) ? "翻譯中" : "前面都翻譯好了";
+      break;
+    }
+    const job: JobRecord = next.retry
+      ? (next.retry as JobRecord)
+      : {
+          id: nextJobId++,
+          start: next.start,
+          end: next.end,
+          status: "running",
+          tries: 0,
+          retryAt: 0,
+          flexible: false,
+          controller: null,
+          untranslated: false,
+        };
+    target.jobs.set(job.id, job);
+    diag.reason = `翻譯創作者字幕 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒`;
+    void runCreatorJob(target, job);
+  }
 }
 
 function schedule(target: VideoState, v: HTMLVideoElement) {
@@ -632,7 +822,9 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
   const t = v?.currentTime ?? 0;
   const onScreen = target?.cues.some((cue) => cue.start <= t + 1 && cue.end > t - 5) ?? false;
   let message = "";
-  if (!settings.enabled || isAdShowing() || !settingsLoaded) message = "";
+  const source = target?.source.kind;
+  if (!settings.enabled || isAdShowing() || !settingsLoaded || source === "target") message = "";
+  else if (source === "creator" && !settings.translate) message = "";
   else if (!settings.groqApiKey) message = "AI 字幕：請點擴充圖示填 Groq API key";
   else if (target?.lastError) message = `AI 字幕：${target.lastError}`;
   else if (quota.whisper === "out") message = "AI 字幕：今天的語音辨識額度用完了";
@@ -641,7 +833,7 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
     message = diag.audioBuffers
       ? "AI 字幕：有找到音訊但沒收到資料"
       : "AI 字幕：找不到音訊，請重新整理頁面";
-  } else if (target && !onScreen) {
+  } else if (target && !onScreen && source !== "creator") {
     // A finished chunk under the playhead with no caption: skipped for having no voice, or
     // Whisper's lines there were all dropped (made up). Not waiting for anything; said only
     // after a while (like "waiting"), so it does not flash at a start or after a stall.
@@ -669,12 +861,27 @@ function tick() {
     diag.reason = "已關閉";
     return;
   }
+  resolveSource(target);
+  if (target.source.kind === "deciding") {
+    diag.reason = "確認有沒有創作者字幕";
+    return;
+  }
+  if (target.source.kind === "target") {
+    // The creator's own track in the target language is shown: nothing to do.
+    diag.reason = "使用創作者的目標語言字幕";
+    target.store.prune(v?.currentTime ?? 0, () => true, 0);
+    return;
+  }
+  const creatorSource = target.source.kind === "creator";
   syncCacheKey(target);
   if (!target.cacheLoaded) {
     diag.reason = "讀取快取中";
     return;
   }
-  if (!settings.groqApiKey && !(settings.debugCapture && settings.debugDryRun)) {
+  const needsKey = creatorSource
+    ? settings.translate
+    : !(settings.debugCapture && settings.debugDryRun);
+  if (!settings.groqApiKey && needsKey) {
     diag.reason = "沒有 API key";
     return;
   }
@@ -686,14 +893,15 @@ function tick() {
     diag.reason = "廣告中";
     return;
   }
-  if (!(settings.debugCapture && settings.debugDryRun)) {
+  if (needsKey) {
     refreshQuota();
     if (!quotaKnown) {
       diag.reason = "讀取 Groq 額度中";
       return;
     }
   }
-  schedule(target, v);
+  if (creatorSource) scheduleCreator(target, v);
+  else schedule(target, v);
 }
 
 // Time from a start or seek until a caption is on screen; logged once per start or seek
@@ -708,7 +916,7 @@ function render() {
     return;
   }
   // Captions go to YouTube's CC menu; the overlay is only the fallback when that breaks.
-  if (captionTrack.mode(target.videoId).mode === "overlay") {
+  if (displayMode(target.videoId).mode === "overlay") {
     overlay.render(target.cues, v.currentTime, settings.showOriginal);
   } else {
     overlay.clear();
@@ -777,7 +985,7 @@ setInterval(render, RENDER_MS);
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if ((message as { type?: unknown } | null)?.type !== "get-display-mode") return false;
   const reply: DisplayModeReply = settings.enabled
-    ? captionTrack.mode(videoIdFromUrl(location.href))
+    ? displayMode(videoIdFromUrl(location.href))
     : { videoId: videoIdFromUrl(location.href), mode: "pending", reason: "" };
   sendResponse(reply);
   return false;
