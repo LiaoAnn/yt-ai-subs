@@ -258,6 +258,7 @@ The input is a JSON object of numbered lines, consecutive pieces of speech from 
 - Translate idioms and slang by meaning, not word for word.
 - Write natural, concise subtitles in the spoken style of the target language${settings.targetLanguage === "zh-TW" ? " as used in Taiwan (Taiwanese vocabulary, no Mainland terms)" : ""}. Leave out pure fillers (えっと, あの, まあ, 그, 뭐, um); a line that is only a filler gets a short natural interjection.
 - Use the established names of well-known people, groups and companies in the target language when you know them, and keep every name the same throughout. The video's title and channel help to tell who is speaking and what the names are.
+- Never leave Hangul or Japanese kana in the translation, not even in a name. ${settings.targetLanguage === "en" ? "Romanise Korean and Japanese names (지수 → Jisoo, はると → Haruto)." : "Write Korean and Japanese names in Chinese characters: the person's established Chinese name if there is one, else a usual transliteration (지수 → 智秀, 민준 → 珉俊, はると → 陽翔); leave out honorifics like 님 and さん or translate them."}
 - When a glossary is given, translate each of its terms exactly as it says.
 - Keep a line that is already in the target language.
 Reply ONLY with a JSON object with exactly the same numbered keys, plus "terms": {"1": "...", "2": "...", ..., "terms": {...}}.

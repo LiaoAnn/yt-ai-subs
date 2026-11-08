@@ -33,6 +33,18 @@ describe("mergeTerms", () => {
     expect(mergeTerms(glossary, null, [""])).toEqual([]);
   });
 
+  it("keeps the bare name without honorifics, and never a rendering left in Hangul or kana", () => {
+    const glossary: Glossary = {};
+    expect(
+      mergeTerms(glossary, { 희영님: "熙英", 위랑: "위랑", 田中さん: "田中", ハル: "ハル" }, [
+        "희영님이랑 위랑 님, 田中さん ハル",
+      ]),
+    ).toEqual([
+      ["희영", "熙英"],
+      ["田中", "田中"],
+    ]);
+  });
+
   it("matches terms regardless of spaces and case", () => {
     const glossary: Glossary = { "Running Man": "Running Man" };
     expect(mergeTerms(glossary, { runningman: "跑男" }, ["running man 봤어"])).toEqual([]);

@@ -12,6 +12,11 @@ export const MAX_GLOSSARY_SENT = 20;
 const MIN_TERM_CHARS = 2;
 const MAX_TERM_CHARS = 30;
 
+/** Honorifics after a name ("희영님", "田中さん"): the glossary keeps the bare name. */
+const HONORIFIC = /\s*(?:님|씨|さん|ちゃん|くん|君|様|さま)$/u;
+/** Neither target language (zh-TW, en) is written in Hangul or kana: such a "translation" was left as it was. */
+const UNTRANSLATED = /[\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/u;
+
 const squash = (text: string) => text.replace(/[\s、。，,.!?！？…「」]/g, "").toLowerCase();
 const length = (text: string) => [...text].length;
 
@@ -32,8 +37,9 @@ export function mergeTerms(
   for (const [rawSource, rawTarget] of Object.entries(terms as Record<string, unknown>)) {
     if (Object.keys(glossary).length >= MAX_GLOSSARY_ENTRIES) break;
     if (typeof rawTarget !== "string") continue;
-    const source = rawSource.trim();
+    const source = rawSource.trim().replace(HONORIFIC, "");
     const target = rawTarget.trim();
+    if (UNTRANSLATED.test(target)) continue;
     const key = squash(source);
     if (length(key) < MIN_TERM_CHARS || length(source) > MAX_TERM_CHARS) continue;
     if (!target || length(target) > MAX_TERM_CHARS) continue;
