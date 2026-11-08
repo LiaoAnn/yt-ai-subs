@@ -78,4 +78,4 @@ Every change goes through these five steps, in order:
 
 ## Secrets
 
-- API keys live only in `chrome.storage.local` of the browser profile. Never commit, log or print a key. For local testing the user supplies the Groq key through T3's secret prompt; agents must not read its value.
+- API keys live only in `chrome.storage.local` of the browser profile. Never commit, log or print a key. For local testing the user supplied the Groq key once through T3's secret prompt; it is kept outside the repo in `/home/dev/.local/state/yt-ai-subs/groq-key` (mode 600) on the dev VM. Use that file as the `test-extension-in-browser` skill says (section 5); do not ask for the key again with `request_secret`. Agents must not read its value into their output: no `cat`, no printing, no command-line arguments, no logs.
