@@ -38,7 +38,7 @@ import {
   buildWhisperPrompt,
   type VideoInfo,
 } from "@/shared/video-context";
-import { unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
+import { DUB_REASON, unsupportedReason, videoIdFromUrl } from "@/shared/youtube";
 import { AudioStore } from "./audio-store";
 import { cacheKey, loadCache, saveCache } from "./cache";
 import { CaptionTrackBridge } from "./caption-track";
@@ -355,15 +355,22 @@ window.addEventListener("message", (event) => {
   }
 });
 
-/** Why the current page gets no captions (live stream, Shorts), or "". */
+/** Why the current page gets no captions (live stream, Shorts, an AI dub playing), or "". */
 const unsupported = (videoId: string | null) =>
-  unsupportedReason(location.pathname, captionTrack.isLive(videoId));
+  unsupportedReason(
+    location.pathname,
+    captionTrack.isLive(videoId),
+    captionTrack.isDubbed(videoId),
+  );
 
 function onSegment(message: SegmentMessage) {
   diag.segments++;
   if (diag.segments === 1) console.log(LOG_PREFIX, "receiving audio");
   const videoId = message.videoId ?? videoIdFromUrl(location.href);
-  if (!videoId || unsupported(videoId)) return; // keep no audio that will never be sent
+  // Keep no audio that will never be sent. Not by the dub verdict: the page script passes on
+  // no dubbed audio, and after a switch to the original the first segments (the init
+  // segments) arrive before the verdict changes.
+  if (!videoId || unsupportedReason(location.pathname, captionTrack.isLive(videoId))) return;
   if (!state || state.videoId !== videoId) {
     if (state) abortAll(state);
     state = newVideoState(videoId);
@@ -981,7 +988,9 @@ function tick() {
   if (reason) {
     if (diag.reason !== reason) console.log(LOG_PREFIX, `off for this video: ${reason}`);
     abortAll(target);
-    target.store.prune(Infinity, () => true);
+    // A dub can be switched back: the stored audio is the original's (the page script never
+    // passes on a dub's), so it stays, pruned as usual.
+    if (reason !== DUB_REASON) target.store.prune(Infinity, () => true);
     diag.reason = reason;
     return;
   }

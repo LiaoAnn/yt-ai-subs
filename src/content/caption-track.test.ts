@@ -33,3 +33,20 @@ describe("CaptionTrackBridge.sync", () => {
     expect(postMessage.mock.calls[4]![0].videoId).toBe("other");
   });
 });
+
+const verdict = (videoId: string, dubbed?: boolean) =>
+  ({ __ytAiSubs: true, type: "caption-mode", videoId, mode: "cc", reason: "", dubbed }) as const;
+
+describe("CaptionTrackBridge.isDubbed", () => {
+  it("follows the page script's last word for the video in the URL", () => {
+    const bridge = new CaptionTrackBridge();
+    expect(bridge.isDubbed("vid")).toBe(false); // nothing heard yet
+    bridge.onVerdict(verdict("vid", true));
+    expect(bridge.isDubbed("vid")).toBe(true);
+    expect(bridge.isDubbed("other")).toBe(false);
+    bridge.onVerdict(verdict("vid", false)); // switched to the original track
+    expect(bridge.isDubbed("vid")).toBe(false);
+    bridge.onVerdict(verdict("vid")); // an older page script without the field
+    expect(bridge.isDubbed("vid")).toBe(false);
+  });
+});

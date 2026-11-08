@@ -84,6 +84,11 @@ export class CaptionTrackBridge {
     return videoId !== null && this.verdict?.videoId === videoId && this.verdict.live === true;
   }
 
+  /** Whether the page script last said the player plays an AI dub for `videoId`. */
+  isDubbed(videoId: string | null): boolean {
+    return videoId !== null && this.verdict?.videoId === videoId && this.verdict.dubbed === true;
+  }
+
   /** The mode for `videoId` (the video in the URL). */
   mode(videoId: string | null, now = Date.now()): DisplayModeReply {
     if (!videoId) return { videoId, mode: "pending", reason: "" };

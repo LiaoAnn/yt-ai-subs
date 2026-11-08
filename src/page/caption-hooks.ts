@@ -13,6 +13,7 @@ import {
 import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
+import { playerPlaysDub } from "./audio-track";
 import {
   creatorMessage,
   creatorTick,
@@ -107,6 +108,9 @@ function readConfig() {
 
 /** Called with every player response the page accepts (before it is patched). */
 let onPlayerResponse: (response: unknown) => void = () => {};
+
+/** The last audio track seen per video outside ads: true while an AI dub plays. */
+const dubbedVideos = new Map<string, boolean>();
 
 /** Live streams seen in player responses (they get no track and no captions). */
 const liveVideos = new Set<string>();
@@ -414,9 +418,20 @@ function control() {
       console.warn(LOG_PREFIX, "caption track: player API failed", error);
     }
 
+    // While an AI dub plays, leave the video to YouTube: no track selected, no creator track
+    // fetched or selected (both happen once the viewer switches to the original).
+    if (videoId && !adShowing) {
+      const dub = playerPlaysDub();
+      if (dub !== null && dubbedVideos.get(videoId) !== dub) {
+        dubbedVideos.set(videoId, dub);
+        while (dubbedVideos.size > 16) dubbedVideos.delete(dubbedVideos.keys().next().value!);
+      }
+    }
+    const dubbed = videoId !== null && dubbedVideos.get(videoId) === true;
+
     const config = readConfig();
     const track = videoId ? trackFor(videoId) : null;
-    if (config.enabled) creatorTick(player, videoId, adShowing, CONTROL_MS);
+    if (config.enabled && !dubbed) creatorTick(player, videoId, adShowing, CONTROL_MS);
     const creatorTarget = targetFor(videoId);
 
     // Never select the track for a video that already fell back to the overlay (the track
@@ -428,6 +443,7 @@ function control() {
       ours &&
       config.enabled &&
       !adShowing &&
+      !dubbed &&
       !fellBack &&
       !autoSelected.has(videoId)
     ) {
@@ -505,7 +521,7 @@ function control() {
       );
     }
     const live = videoId !== null && liveVideos.has(videoId);
-    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live]);
+    const key = JSON.stringify([videoId, verdict.mode, verdict.reason, live, dubbed]);
     // Repeat now and then, in case the content script missed it (it loads after us).
     if (key !== lastPosted || Date.now() - lastPostedAt > REPOST_MS) {
       const changed = key !== lastPosted;
@@ -522,7 +538,14 @@ function control() {
           }
         }
       }
-      post({ type: "caption-mode", videoId, mode: verdict.mode, reason: verdict.reason, live });
+      post({
+        type: "caption-mode",
+        videoId,
+        mode: verdict.mode,
+        reason: verdict.reason,
+        live,
+        dubbed,
+      });
       const info = videoId ? videoInfos.get(videoId) : undefined;
       if (info) postVideoInfo(info);
     }
