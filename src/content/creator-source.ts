@@ -8,9 +8,18 @@ import {
   analyzeCreatorTrack,
   describeAnalysis,
   json3Lines,
+  languageMatches,
   linesToCues,
 } from "@/shared/creator-captions";
 import type { CreatorCaptionsMessage } from "@/shared/messages";
+import type { Settings } from "@/shared/settings";
+
+/** The settings a source decision depends on. */
+export type SourceSettings = Pick<Settings, "translate" | "targetLanguage" | "sourceLanguage">;
+
+/** Changes when a setting the decision depends on changes (then it is made again). */
+export const sourceSettingsKey = (settings: SourceSettings) =>
+  `${settings.translate}\n${settings.targetLanguage}\n${settings.sourceLanguage}`;
 
 export type CaptionSource =
   | { kind: "deciding" }
@@ -27,13 +36,30 @@ export const PENDING_WAIT_MS = 30_000;
 
 /**
  * The source for a video from the page script's latest reply, or "deciding" while it is
- * worth waiting. `waitedMs` is the ad-free time spent deciding so far.
+ * worth waiting. `waitedMs` is the ad-free time spent deciding so far. The page script
+ * judged the tracks with the settings at load; when they changed since (translation
+ * turned off, another language), a creator track that no longer fits is not used.
  */
 export function decideSource(
   reply: CreatorCaptionsMessage | undefined,
   waitedMs: number,
+  settings: SourceSettings,
 ): CaptionSource {
   const status = reply?.status ?? "unknown";
+  const code = reply?.languageCode ?? "";
+  if (
+    status === "target" &&
+    !(settings.translate && languageMatches(code, settings.targetLanguage))
+  ) {
+    return { kind: "whisper", reason: "設定改了，創作者的字幕不是現在要的語言" };
+  }
+  if (
+    (status === "fetched" || status === "pending") &&
+    settings.sourceLanguage !== "auto" &&
+    !languageMatches(code, settings.sourceLanguage)
+  ) {
+    return { kind: "whisper", reason: "設定改了，創作者的字幕不是現在的原文語言" };
+  }
   switch (status) {
     case "none":
       return { kind: "whisper", reason: "沒有創作者上傳的字幕" };

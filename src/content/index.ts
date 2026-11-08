@@ -31,6 +31,7 @@ import {
   decideSource,
   linesForChunk,
   mergeCachedTranslations,
+  sourceSettingsKey,
   type CaptionSource,
 } from "./creator-source";
 import { saveDebugCapture } from "./debug-capture";
@@ -132,8 +133,10 @@ interface VideoState {
   /** Bumped on every change to `cues` or their text; the CC track resends on a change. */
   cuesVersion: number;
   lastError: string;
-  /** Where the lines come from: decided once per video (creator-source.ts). */
+  /** Where the lines come from: decided per video and settings (creator-source.ts). */
   source: CaptionSource;
+  /** sourceSettingsKey of the settings `source` was decided with. */
+  sourceKey: string;
   /** Ad-free time spent deciding the source. */
   decidingMs: number;
 }
@@ -181,8 +184,14 @@ function askCreatorCaptions(videoId: string) {
 
 /** Decides where the video's lines come from; asks the page script while undecided. */
 function resolveSource(target: VideoState) {
+  const key = sourceSettingsKey(settings);
+  if (target.source.kind !== "deciding" && target.sourceKey !== key) {
+    // Settings changed: decide again (syncCacheKey then resets the captions).
+    target.source = { kind: "deciding" };
+  }
   if (target.source.kind !== "deciding") return;
-  const decided = decideSource(creatorReplies.get(target.videoId), target.decidingMs);
+  target.sourceKey = key;
+  const decided = decideSource(creatorReplies.get(target.videoId), target.decidingMs, settings);
   if (decided.kind === "deciding") {
     if (!isAdShowing()) target.decidingMs += TICK_MS;
     askCreatorCaptions(target.videoId);
@@ -202,6 +211,26 @@ function resolveSource(target: VideoState) {
       `captions from the creator track for ${target.videoId}, no Whisper: ${decided.summary}`,
     );
   }
+}
+
+/**
+ * The page script's display mode, except for a video whose creator track replaced ours
+ * when the settings no longer want it (changed since the load): our track is not in the
+ * player then, so the captions go to the overlay.
+ */
+function displayMode(videoId: string | null): DisplayModeReply {
+  const reply = captionTrack.mode(videoId);
+  const target = currentState();
+  const kind = target?.source.kind;
+  if (
+    reply.mode === "creator" &&
+    target?.videoId === videoId &&
+    kind !== "target" &&
+    kind !== "deciding"
+  ) {
+    return { videoId, mode: "overlay", reason: "設定改了，AI 字幕軌要重新整理頁面後才會出現" };
+  }
+  return reply;
 }
 
 const overlay = new Overlay();
@@ -242,6 +271,7 @@ function newVideoState(videoId: string): VideoState {
     cuesVersion: 0,
     lastError: "",
     source: { kind: "deciding" },
+    sourceKey: "",
     decidingMs: 0,
   };
 }
@@ -451,16 +481,23 @@ async function runCreatorJob(target: VideoState, job: JobRecord) {
   job.status = "running";
   const label = `${job.start.toFixed(1)}–${job.end.toFixed(1)} s (creator track)`;
   try {
-    const taken = new Set<Cue>();
-    for (const other of target.jobs.values()) {
-      if (other !== job && other.status === "running")
-        other.claimed?.forEach((cue) => taken.add(cue));
-    }
-    const fresh = linesForChunk(target.cues, job.start, job.end, taken);
-    job.claimed = fresh;
     job.transcribed = true;
     const before = runningPredecessor(target, job);
-    if (!(await translateLines(target, job, fresh, before, label, signal))) return;
+    // Later rounds pick up lines another chunk had claimed and then dropped (a seek
+    // cancelled it), so a finished chunk never leaves one of its lines untranslated.
+    for (let round = 0; round < 3; round++) {
+      const taken = new Set<Cue>();
+      for (const other of target.jobs.values()) {
+        if (other !== job && other.status === "running")
+          other.claimed?.forEach((cue) => taken.add(cue));
+      }
+      const fresh = linesForChunk(target.cues, job.start, job.end, taken);
+      if (round > 0 && !fresh.length) break;
+      job.claimed = fresh;
+      const wait = round === 0 ? before : undefined;
+      if (!(await translateLines(target, job, fresh, wait, label, signal))) return;
+      if (job.untranslated || !settings.translate) break;
+    }
     job.status = "done";
     persist(target);
   } catch (error) {
@@ -879,7 +916,7 @@ function render() {
     return;
   }
   // Captions go to YouTube's CC menu; the overlay is only the fallback when that breaks.
-  if (captionTrack.mode(target.videoId).mode === "overlay") {
+  if (displayMode(target.videoId).mode === "overlay") {
     overlay.render(target.cues, v.currentTime, settings.showOriginal);
   } else {
     overlay.clear();
@@ -948,7 +985,7 @@ setInterval(render, RENDER_MS);
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if ((message as { type?: unknown } | null)?.type !== "get-display-mode") return false;
   const reply: DisplayModeReply = settings.enabled
-    ? captionTrack.mode(videoIdFromUrl(location.href))
+    ? displayMode(videoIdFromUrl(location.href))
     : { videoId: videoIdFromUrl(location.href), mode: "pending", reason: "" };
   sendResponse(reply);
   return false;

@@ -9,6 +9,8 @@ import {
   mergeCachedTranslations,
 } from "./creator-source";
 
+const SETTINGS = { translate: true, targetLanguage: "zh-TW", sourceLanguage: "ja" } as const;
+
 const reply = (extra: Partial<CreatorCaptionsMessage>): CreatorCaptionsMessage => ({
   [PAGE_MESSAGE_TAG]: true,
   type: "creator-captions",
@@ -26,23 +28,37 @@ const events = (texts: string[], startMs = 0, stepMs = 3000) =>
 
 describe("decideSource", () => {
   it("waits for the page script, then gives up and uses Whisper", () => {
-    expect(decideSource(undefined, 0).kind).toBe("deciding");
-    expect(decideSource(reply({ status: "unknown" }), UNKNOWN_WAIT_MS - 1).kind).toBe("deciding");
-    expect(decideSource(undefined, UNKNOWN_WAIT_MS).kind).toBe("whisper");
-    expect(decideSource(reply({ status: "pending" }), UNKNOWN_WAIT_MS).kind).toBe("deciding");
-    expect(decideSource(reply({ status: "pending" }), PENDING_WAIT_MS).kind).toBe("whisper");
+    expect(decideSource(undefined, 0, SETTINGS).kind).toBe("deciding");
+    expect(decideSource(reply({ status: "unknown" }), UNKNOWN_WAIT_MS - 1, SETTINGS).kind).toBe(
+      "deciding",
+    );
+    expect(decideSource(undefined, UNKNOWN_WAIT_MS, SETTINGS).kind).toBe("whisper");
+    expect(
+      decideSource(reply({ status: "pending", languageCode: "ja" }), UNKNOWN_WAIT_MS, SETTINGS)
+        .kind,
+    ).toBe("deciding");
+    expect(
+      decideSource(reply({ status: "pending", languageCode: "ja" }), PENDING_WAIT_MS, SETTINGS)
+        .kind,
+    ).toBe("whisper");
   });
 
   it("uses Whisper without a creator track or when fetching it failed", () => {
-    expect(decideSource(reply({ status: "none" }), 0).kind).toBe("whisper");
-    expect(decideSource(reply({ status: "failed", reason: "x" }), 0)).toEqual({
+    expect(decideSource(reply({ status: "none" }), 0, SETTINGS).kind).toBe("whisper");
+    expect(decideSource(reply({ status: "failed", reason: "x" }), 0, SETTINGS)).toEqual({
       kind: "whisper",
       reason: "x",
     });
   });
 
   it("spends nothing when the creator track is in the target language", () => {
-    expect(decideSource(reply({ status: "target", name: "中文（繁體）" }), 0)).toEqual({
+    expect(
+      decideSource(
+        reply({ status: "target", languageCode: "zh-Hant", name: "中文（繁體）" }),
+        0,
+        SETTINGS,
+      ),
+    ).toEqual({
       kind: "target",
       name: "中文（繁體）",
     });
@@ -57,6 +73,7 @@ describe("decideSource", () => {
     const used = decideSource(
       reply({ status: "fetched", languageCode: "ja", name: "日本語", creator: handMade, asr }),
       0,
+      SETTINGS,
     );
     expect(used.kind).toBe("creator");
     if (used.kind === "creator") {
@@ -66,12 +83,36 @@ describe("decideSource", () => {
     const copied = decideSource(
       reply({ status: "fetched", languageCode: "ja", creator: asr, asr }),
       0,
+      SETTINGS,
     );
     expect(copied.kind).toBe("whisper");
     // No automatic track to compare with: trusted.
-    expect(decideSource(reply({ status: "fetched", creator: handMade, asr: null }), 0).kind).toBe(
-      "creator",
-    );
+    expect(
+      decideSource(
+        reply({ status: "fetched", languageCode: "ja", creator: handMade, asr: null }),
+        0,
+        SETTINGS,
+      ).kind,
+    ).toBe("creator");
+  });
+});
+
+describe("decideSource after a settings change", () => {
+  it("drops a target-language creator track the settings no longer want", () => {
+    const target = reply({ status: "target", languageCode: "zh-Hant", name: "中文" });
+    expect(decideSource(target, 0, SETTINGS).kind).toBe("target");
+    expect(decideSource(target, 0, { ...SETTINGS, translate: false }).kind).toBe("whisper");
+    expect(decideSource(target, 0, { ...SETTINGS, targetLanguage: "en" }).kind).toBe("whisper");
+  });
+
+  it("drops a spoken-language creator track in another language than the setting", () => {
+    const handMade = events(["一行目です", "二行目です"]);
+    const fetched = reply({ status: "fetched", languageCode: "ja", creator: handMade, asr: null });
+    expect(decideSource(fetched, 0, SETTINGS).kind).toBe("creator");
+    expect(decideSource(fetched, 0, { ...SETTINGS, sourceLanguage: "ko" }).kind).toBe("whisper");
+    expect(decideSource(fetched, 0, { ...SETTINGS, sourceLanguage: "auto" }).kind).toBe("creator");
+    // Translation off: the creator's lines are shown untranslated.
+    expect(decideSource(fetched, 0, { ...SETTINGS, translate: false }).kind).toBe("creator");
   });
 });
 
