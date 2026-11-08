@@ -40,7 +40,6 @@ def main():
         gt = json.load(open(path))
         tracks = gt.get("tracks", [])
         asr = next((t for t in tracks if t.get("kind") == "asr"), None)
-        langs = {t["languageCode"].split("-")[0] for t in tracks if not t.get("kind")}
         language = languages.get(vid)
         if not language:
             print("not in src/qa/dataset.ts", vid, file=sys.stderr)

@@ -262,7 +262,6 @@ interface Pool {
   coverage: [number, number];
   cer: [number, number];
   chrF: number[];
-  starts: number[];
 }
 
 function emptyPool(): Pool {
@@ -280,7 +279,6 @@ function emptyPool(): Pool {
     coverage: [0, 0],
     cer: [0, 0],
     chrF: [],
-    starts: [],
   };
 }
 

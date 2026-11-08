@@ -350,6 +350,14 @@ def audio_check(session, root, ids):
     b.ab("close")
 
 
+def gt_failed(path):
+    """A ground-truth file from a failed fetch: an error, or a track that came back empty."""
+    if not os.path.exists(path):
+        return False
+    gt = json.load(open(path))
+    return bool(gt.get("error")) or any(not t.get("json") for t in gt.get("tracks", []))
+
+
 def dry(session, root, ids, gt_only=False):
     b = Browser(session)
     b.start()
@@ -358,6 +366,8 @@ def dry(session, root, ids, gt_only=False):
     for vid in ids:
         gt_path = f"{root}/gt/{vid}.json"
         dry_path = f"{root}/dry/{vid}.json"
+        if gt_failed(gt_path) and os.path.exists(gt_path):
+            os.remove(gt_path)  # an earlier fetch failed: try again
         if os.path.exists(gt_path) and (gt_only or os.path.exists(dry_path)):
             log(vid, "done already")
             continue
@@ -416,6 +426,11 @@ def usage_of(lines, captures):
     sent = [c for c in captures.values() if c.get("raw") is not None and c.get("sentSeconds", 0) > 0]
     req = len(sent)
     audio = sum(max(10.0, c["sentSeconds"]) for c in sent)
+    # A request whose capture was never saved (its job aborted) is billed all the same:
+    # take the log's count when it is higher.
+    logged = [float(m.group(1)) for l in lines for m in [re.search(r"whisper [\d.]+–[\d.]+ s \(([\d.]+) s audio", l)] if m]
+    if len(logged) > req:
+        req, audio = len(logged), sum(max(10.0, a) for a in logged)
     tokens = 0
     for l in lines:
         m = re.search(r"translation [\d.]+–[\d.]+ s: \d+ lines, (\d+) tokens", l)
@@ -480,7 +495,9 @@ def whisper(session, root, plan_path):
                        % json.dumps(f"debug:{vid}:"))
             stable = stable + 1 if n == last_n else 0
             last_n = n
-            if stable >= 3:
+            # A chunk is saved only after its translation, which can wait a minute or more
+            # for the token limit: with translation, wait longer before giving up.
+            if stable >= (12 if translate else 3):
                 break
         # Off before the YouTube tab is shown again, or it would schedule more chunks for
         # the paused playhead. The next video's settings turn it on again.

@@ -4,6 +4,8 @@
 // work: what this module returns stays in .qa/ (gitignored); only speech intervals (no
 // text) may be committed.
 
+import type { Json3Event } from "../shared/captions.ts";
+import { json3Lines } from "../shared/creator-captions.ts";
 import { cer, isNonSpeech, normalizeForCer, speechText } from "./text.ts";
 
 export interface Interval {
@@ -44,16 +46,12 @@ export interface Json3 {
   }[];
 }
 
-/** Lines of a creator track: one per event with text, in seconds. */
+/**
+ * Lines of a creator track, as the extension reads them (json3Lines: an event without a
+ * duration ends where the next starts; line breaks inside an event become spaces).
+ */
 export function creatorLines(json: Json3 | null): Line[] {
-  const lines: Line[] = [];
-  for (const event of json?.events ?? []) {
-    const text = (event.segs ?? []).map((s) => s.utf8 ?? "").join("");
-    if (!text.trim() || event.tStartMs === undefined) continue;
-    const start = event.tStartMs / 1000;
-    lines.push({ start, end: start + (event.dDurationMs ?? 0) / 1000, text });
-  }
-  return lines.toSorted((a, b) => a.start - b.start);
+  return json3Lines((json?.events ?? []) as Json3Event[]);
 }
 
 export interface AsrWord {

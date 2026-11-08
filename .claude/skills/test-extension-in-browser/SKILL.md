@@ -162,7 +162,7 @@ cp -r <path>/dist <scratchpad>/ext    # a copy: a rebuild must not change the ex
 export QA_EXTENSION=<scratchpad>/ext QA_AD_SKIP=<path>/test/ad-skip
 D=<path>/.claude/skills/test-extension-in-browser
 python3 -I $D/eval-collect.py dry <session> <path>/.qa <id>...       # creator + automatic tracks, dry run 0–480 s at 2×
-python3 -I $D/eval-collect.py gt <session> <path>/.qa <id>...        # tracks only (retry failed fetches)
+python3 -I $D/eval-collect.py gt <session> <path>/.qa <id>...        # tracks only; a failed fetch (error or empty track) is fetched again
 python3 -I $D/eval-plan.py <path>/.qa <ids-file> <ids-to-translate> > <scratchpad>/plan.json
 python3 -I $D/eval-collect.py whisper <session> <path>/.qa <scratchpad>/plan.json   # Groq: needs the brief's OK
 ```

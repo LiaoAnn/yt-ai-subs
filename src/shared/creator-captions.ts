@@ -10,7 +10,8 @@
 //
 // How tracks are listed and fetched, and the traps: the research-youtube-captions skill.
 
-import type { Cue, Json3Event } from "./captions";
+// Relative, with the extension: the offline evaluation (src/qa/) runs this module in plain Node.
+import type { Cue, Json3Event } from "./captions.ts";
 
 /** The fields of a player response's `captionTracks[]` entry used here. */
 export interface CaptionTrackInfo {
