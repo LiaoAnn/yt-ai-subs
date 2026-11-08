@@ -642,7 +642,10 @@ function updateStatus(target: VideoState | null, v: HTMLVideoElement | null) {
       ? "AI 字幕：有找到音訊但沒收到資料"
       : "AI 字幕：找不到音訊，請重新整理頁面";
   } else if (target && !onScreen && (inFlight(target) || playedLong)) {
-    message = inFlight(target) ? "AI 字幕：聽寫中…" : "AI 字幕：等待音訊…";
+    // A finished chunk under the playhead with no caption: skipped for having no voice, or
+    // Whisper heard nothing there. Not waiting for anything.
+    if (isFinished(target.jobs.values(), t)) message = "AI 字幕：這段沒偵測到人聲";
+    else message = inFlight(target) ? "AI 字幕：聽寫中…" : "AI 字幕：等待音訊…";
   }
   overlay.setStatus(message);
 }
