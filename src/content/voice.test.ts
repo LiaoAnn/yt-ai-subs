@@ -25,6 +25,22 @@ const concat = (...parts: Float32Array[]) => {
   return out;
 };
 
+// A low voice whose fundamental (here 180 Hz) carries most of its energy, below the
+// 300–3400 Hz band: only 12% of the energy is in the band (cth3M1iavGM, a male voice with
+// its audio high-passed at 150 Hz, had 36% in the band while speaking).
+const lowVoice = (seconds: number, held = false) =>
+  Float32Array.from({ length: RATE * seconds }, (_, i) => {
+    const t = i / RATE;
+    // Syllables: 150 ms on, 100 ms off; `held` keeps the sound on (music, a hum).
+    const on = held || t % 0.25 < 0.15 ? 1 : 0;
+    return (
+      on *
+      (0.3 * Math.sin(2 * Math.PI * 180 * t) +
+        0.1 * Math.sin(2 * Math.PI * 360 * t) +
+        0.05 * Math.sin(2 * Math.PI * 540 * t))
+    );
+  });
+
 describe("voiceFeatures", () => {
   it("gives one frame per 20 ms with the speech-band share and flatness", () => {
     const f = voiceFeatures(tone(1000, 1), RATE);
@@ -44,6 +60,26 @@ describe("bestVoicedWindow", () => {
     expect(bestVoicedWindow(voiceFeatures(concat(noise(5), tone(80, 5)), RATE))).toBeLessThan(
       MIN_VOICED_SHARE,
     );
+  });
+
+  it("finds a low voice whose energy is mostly below 300 Hz", () => {
+    const f = voiceFeatures(lowVoice(4), RATE);
+    expect(Math.max(...f.bandShare)).toBeLessThan(45);
+    expect(bestVoicedWindow(f)).toBeGreaterThanOrEqual(MIN_VOICED_SHARE);
+  });
+
+  it("does not take a held low sound for a voice", () => {
+    expect(bestVoicedWindow(voiceFeatures(lowVoice(4, true), RATE))).toBeLessThan(MIN_VOICED_SHARE);
+    // Bass below 150 Hz under the same tones, switching on and off with a beat.
+    const withBass = lowVoice(4).map((s, i) => s + 0.6 * Math.sin((2 * Math.PI * 70 * i) / RATE));
+    expect(bestVoicedWindow(voiceFeatures(withBass, RATE))).toBeLessThan(MIN_VOICED_SHARE);
+  });
+
+  it("keeps the speech-band rule for older captures without wideShare", () => {
+    const { wideShare: _, ...older } = voiceFeatures(lowVoice(4), RATE);
+    expect(bestVoicedWindow(older)).toBe(0);
+    const { wideShare: __, ...talk } = voiceFeatures(tone(1000, 3), RATE);
+    expect(bestVoicedWindow(talk)).toBeGreaterThan(0.9);
   });
 
   it("handles audio shorter than the window", () => {
