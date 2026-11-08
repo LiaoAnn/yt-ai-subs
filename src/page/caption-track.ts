@@ -21,9 +21,28 @@ export const trackVssId = (languageCode: string) => `.${languageCode}.${TRACK_MA
 export const isOurVssId = (vssId: unknown): boolean =>
   typeof vssId === "string" && vssId.endsWith(`.${TRACK_MARKER}`);
 
-export function trackBaseUrl(videoId: string, languageCode: string): string {
-  const params = new URLSearchParams({ v: videoId, lang: languageCode, [TRACK_MARKER]: "1" });
-  return `https://www.youtube.com/api/timedtext?${params}`;
+/**
+ * Our track's URL. With `template` (a real track's baseUrl from the same response), its
+ * parameters are kept: the player adds its proof-of-origin token (`pot`) only to URLs that
+ * look like a real track's, and the page script needs that token to fetch the creator's
+ * tracks (see creator-hooks). The request never leaves the page either way.
+ */
+export function trackBaseUrl(videoId: string, languageCode: string, template?: string): string {
+  let url: URL | null = null;
+  if (template) {
+    try {
+      url = new URL(template, "https://www.youtube.com/");
+      if (url.hostname !== "www.youtube.com" || url.pathname !== "/api/timedtext") url = null;
+    } catch {
+      url = null;
+    }
+  }
+  url ??= new URL("https://www.youtube.com/api/timedtext");
+  for (const name of ["kind", "name", "tlang", "fmt"]) url.searchParams.delete(name);
+  url.searchParams.set("v", videoId);
+  url.searchParams.set("lang", languageCode);
+  url.searchParams.set(TRACK_MARKER, "1");
+  return url.href;
 }
 
 /** The video ID if `url` is a timedtext request for our track, else null. */
@@ -54,15 +73,6 @@ export function patchPlayerResponse(response: unknown, config: TrackConfig): str
   if (!isObject(playability) || playability.status !== "OK") return null;
   const videoId = details.videoId;
 
-  const track = {
-    baseUrl: trackBaseUrl(videoId, config.languageCode),
-    name: { simpleText: config.label },
-    vssId: trackVssId(config.languageCode),
-    languageCode: config.languageCode,
-    isTranslatable: false,
-    trackName: config.label,
-  };
-
   let captions = response.captions;
   if (!isObject(captions)) captions = response.captions = {};
   let renderer = (captions as Json).playerCaptionsTracklistRenderer;
@@ -71,6 +81,17 @@ export function patchPlayerResponse(response: unknown, config: TrackConfig): str
   if (!Array.isArray(list.captionTracks)) list.captionTracks = [];
   const tracks = list.captionTracks as unknown[];
   if (tracks.some((existing) => isObject(existing) && isOurVssId(existing.vssId))) return null;
+  const template = tracks.find(
+    (existing) => isObject(existing) && typeof existing.baseUrl === "string",
+  ) as Json | undefined;
+  const track = {
+    baseUrl: trackBaseUrl(videoId, config.languageCode, template?.baseUrl as string | undefined),
+    name: { simpleText: config.label },
+    vssId: trackVssId(config.languageCode),
+    languageCode: config.languageCode,
+    isTranslatable: false,
+    trackName: config.label,
+  };
   const index = tracks.push(track) - 1;
 
   if (!Array.isArray(list.audioTracks) || list.audioTracks.length === 0) {

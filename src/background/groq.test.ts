@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "@/shared/settings";
 import { emptyLedger, quotaFor, recordUsage } from "@/shared/quota";
 import {
+  captionNotesRule,
   estimateChatTokens,
   numberLines,
   parseTranslatedLines,
@@ -120,5 +121,15 @@ describe("billing with a mocked Groq", () => {
       translate(new RateLimiter(), settings, ["x"], "", signal, () => {}, onBilled),
     ).rejects.toThrow("翻譯失敗 400");
     expect(billed).toHaveLength(1);
+  });
+});
+
+describe("captionNotesRule", () => {
+  it("is added only for lines with caption cards or speaker labels", () => {
+    expect(captionNotesRule(["今日はいい天気ですね", "そうですね"])).toBe("");
+    expect(captionNotesRule(["[拍手]"])).toContain("brackets");
+    expect(captionNotesRule(["(감격)"])).toContain("brackets");
+    expect(captionNotesRule(["리원 / 안녕하세요"])).toContain("speaker label");
+    expect(captionNotesRule(["太郎：おはよう"])).toContain("speaker label");
   });
 });

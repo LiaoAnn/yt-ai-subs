@@ -91,7 +91,7 @@ From the popup page (`chrome-extension://<id>/popup.html`) an eval can read `chr
 
 ## 5. With a real Groq key (only with the user's OK for that run)
 
-Never print the key or put it on a command line. Pipe the script into `eval --stdin` and return only its length, e.g. a script that runs `python3 -I` to read the key file and print `chrome.storage.local.set({settings: {...stored, groqApiKey: <json>}})` JS, piped into `agent-browser --session $S eval --stdin`, run on the popup page. Count usage from the `whisper` / `translation` log lines (Groq bills each transcription as at least 10 s).
+Never print the key or put it on a command line. Pipe the script into `eval --stdin` and return only its length, e.g. a script that runs `python3 -I` to read the key file (`/home/dev/.local/state/yt-ai-subs/groq-key` on the dev VM; see "Secrets" in `AGENTS.md`) and print `chrome.storage.local.set({settings: {...stored, groqApiKey: <json>}})` JS, piped into `agent-browser --session $S eval --stdin`, run on the popup page. Count usage from the `whisper` / `translation` log lines (Groq bills each transcription as at least 10 s).
 
 ## 6. Evaluating caption quality offline (debug captures)
 
