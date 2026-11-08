@@ -20,7 +20,7 @@ export interface DebugCapture {
   sentSeconds: number;
   whisperModel: string;
   sourceLanguage: string;
-  /** Whisper's prompt: the video's title, channel and terms, then the recent captions. */
+  /** Whisper's prompt: the recent captions only (buildWhisperPrompt). */
   context: string;
   /** Glossary entries sent with the translation request, if any. */
   glossary?: [string, string][];

@@ -148,12 +148,8 @@ describe("Whisper prompt cap", () => {
   it("keeps everything buildWhisperPrompt returns, even with long Latin captions", async () => {
     const { buildWhisperPrompt } = await import("@/shared/video-context");
     const { WHISPER_PROMPT_CHARS } = await import("./groq");
-    const prompt = buildWhisperPrompt(
-      { videoId: "a", title: "Some Show", channel: "Chan", description: "", keywords: [] },
-      "word ".repeat(400),
-      "en",
-    );
-    expect(prompt.startsWith("Some Show. Chan.")).toBe(true);
+    const prompt = buildWhisperPrompt("word ".repeat(400) + "end");
+    expect(prompt.endsWith("word end")).toBe(true);
     expect(prompt.length).toBeLessThanOrEqual(WHISPER_PROMPT_CHARS);
   });
 });

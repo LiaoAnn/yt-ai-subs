@@ -687,18 +687,13 @@ async function runJob(target: VideoState, job: JobRecord, videoDuration: number)
       );
     }
     const previous = recentLines(target, job.start);
-    const info = videoInfos.get(target.videoId);
     const asrRequest: RuntimeMessage = {
       type: "transcribe",
       requestId: asrId!,
       videoId: target.videoId,
       wavBase64: bytesToBase64(audio.wav),
       durationSeconds: audio.duration,
-      context: buildWhisperPrompt(
-        info,
-        previous.map((cue) => cue.original).join(" "),
-        settings.sourceLanguage,
-      ),
+      context: buildWhisperPrompt(previous.map((cue) => cue.original).join(" ")),
     };
     signal.throwIfAborted(); // a seek during decoding: send nothing
     if (quota.whisper === "out" || pauseReason()) {

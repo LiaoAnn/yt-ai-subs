@@ -243,10 +243,7 @@ export interface TranscribeMessage {
   /** 16 kHz mono WAV, base64 (runtime messages are JSON, so no ArrayBuffers). */
   wavBase64: string;
   durationSeconds: number;
-  /**
-   * Whisper's prompt: the video's title, channel and terms, then the recent captions
-   * (buildWhisperPrompt).
-   */
+  /** Whisper's prompt: the recent captions only (buildWhisperPrompt). */
   context: string;
 }
 
