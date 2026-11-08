@@ -95,6 +95,8 @@ describe("layer C", () => {
     expect(score.cer?.refChars).toBe(18);
     expect(score.cer?.cer).toBeCloseTo(8 / 18, 2); // the second line is missing
     expect(score.start).toMatchObject({ n: 1, median: 0.2 });
+    // the line ends the same text, and a pause follows it: 13.8 − 14
+    expect(score.end).toMatchObject({ n: 1, median: -0.2 });
     expect(score.chrF).toBeGreaterThan(30);
   });
 });

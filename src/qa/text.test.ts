@@ -58,6 +58,12 @@ describe("chrF", () => {
     expect(far).toBeLessThan(10);
   });
 
+  it("weights recall twice as much as precision (beta = 2)", () => {
+    // n = 1–2: precision 1, recall (2/4 + 1/3) / 2 = 5/12; F2 = 5·P·R / (4·P + R)
+    expect(chrF("abcd", "ab", 2)).toBeCloseTo((100 * 5 * (5 / 12)) / (4 + 5 / 12), 6);
+    expect(chrF("ab", "abcd", 2)).toBeCloseTo((100 * 5 * (5 / 12)) / (4 * (5 / 12) + 1), 6);
+  });
+
   it("does not care where lines were split", () => {
     expect(chrF("我們今天，去看電影。", "我們今天去看\n電影")).toBeCloseTo(100);
   });
