@@ -130,6 +130,51 @@ export function playerResponsesIn(body: unknown, depth = 0): Json[] {
   return playerResponsesIn(body.playerResponse, depth + 1);
 }
 
+/** Parses a youtubei request body (YouTube gzips it); null for an empty body. */
+export async function parseRequestBody(bytes: Uint8Array): Promise<unknown> {
+  if (bytes.length === 0) return null;
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    const stream = new Blob([bytes as Uint8Array<ArrayBuffer>])
+      .stream()
+      .pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(stream).text());
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+/**
+ * The video IDs a youtubei request body asks for: `videoId` at the top (/player) or one
+ * level down (/get_watch has `playerRequest` and `watchNextRequest`).
+ */
+export function requestedVideoIds(body: unknown): string[] {
+  if (!isObject(body)) return [];
+  const ids = new Set<string>();
+  if (typeof body.videoId === "string") ids.add(body.videoId);
+  for (const part of Object.values(body)) {
+    if (isObject(part) && typeof part.videoId === "string") ids.add(part.videoId);
+  }
+  return [...ids];
+}
+
+/**
+ * Whether a player response that came through fetch belongs to a video someone asked for:
+ * the request named it, or it is the video in the URL. The page also gets made-up player
+ * responses through fetch (an empty request body, random strings for titles and IDs such
+ * as `Kymdnr0KGWq`, a `logged_in: 1` the anonymous page is not): leave those alone. In
+ * the pre-rolls captured (2 of 2) the ad had no player response of its own; the "ad IDs"
+ * that once got our track were such made-up responses.
+ */
+export function isRequestedResponse(
+  response: Json,
+  requested: readonly string[],
+  urlVideoId: string | null,
+): boolean {
+  const details = response.videoDetails;
+  const videoId = isObject(details) ? details.videoId : undefined;
+  if (typeof videoId !== "string") return false;
+  return videoId === urlVideoId || requested.includes(videoId);
+}
+
 /** youtubei endpoints whose responses carry a player response. */
 export const isPlayerEndpoint = (url: string) =>
   /\/youtubei\/v1\/(player|get_watch)(\?|$)/.test(url);
