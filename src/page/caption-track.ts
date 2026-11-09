@@ -175,6 +175,32 @@ export function isRequestedResponse(
   return videoId === urlVideoId || requested.includes(videoId);
 }
 
+/**
+ * Whether the player's own response for `videoId` (`movie_player.getPlayerResponse()`)
+ * should have had our track but has none: the page script never got to add it (another
+ * extension redefined `ytInitialPlayerResponse` after ours, so our setter never ran: seen
+ * with AdBlock on 2026-11-09). Live streams, disabled tracks and videos whose creator track
+ * in our language replaces ours (`replacedByCreator`) get none on purpose.
+ */
+export function lacksOurTrack(
+  response: unknown,
+  videoId: string,
+  config: TrackConfig,
+  replacedByCreator: boolean,
+): boolean {
+  if (!config.enabled || replacedByCreator || !isObject(response)) return false;
+  const details = response.videoDetails;
+  const playability = response.playabilityStatus;
+  if (!isObject(details) || details.videoId !== videoId || details.isLive === true) return false;
+  if (!isObject(playability) || playability.status !== "OK") return false;
+  const captions = response.captions;
+  const renderer = isObject(captions) ? captions.playerCaptionsTracklistRenderer : null;
+  const tracks = isObject(renderer) ? renderer.captionTracks : null;
+  return !(
+    Array.isArray(tracks) && tracks.some((track) => isObject(track) && isOurVssId(track.vssId))
+  );
+}
+
 /** youtubei endpoints whose responses carry a player response. */
 export const isPlayerEndpoint = (url: string) =>
   /\/youtubei\/v1\/(player|get_watch)(\?|$)/.test(url);
@@ -239,6 +265,11 @@ export interface HealthSample {
   expected: readonly Json3Event[];
   /** Caption text YouTube's renderer shows right now. */
   shown: string;
+  /**
+   * Why our track cannot appear for this video, when that is already known (the player's
+   * own response for it has no track of ours: the page never saw it to add one).
+   */
+  missing?: string;
 }
 
 export interface HealthVerdict {
@@ -294,6 +325,7 @@ export class TrackHealth {
       return this.verdict;
     }
     if (!sample.inTracklist) {
+      if (sample.missing) return this.fail(sample.missing);
       if (this.verdict.mode === "cc") {
         return this.fail("AI 字幕軌從字幕選單消失了");
       }

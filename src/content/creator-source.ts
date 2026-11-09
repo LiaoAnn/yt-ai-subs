@@ -34,8 +34,29 @@ export type CaptionSource =
   /** The creator's spoken-language lines, untranslated. */
   | { kind: "creator"; languageCode: string; cues: Cue[]; summary: string };
 
-/** No word from the page script about the video this long (ad-free): use Whisper. */
-export const UNKNOWN_WAIT_MS = 15_000;
+/**
+ * No word from the page script about the video this long (ad-free): use Whisper. The page
+ * script knows a video's tracks as soon as it sees its player response, or the player's own
+ * copy (caption-hooks.ts, playerResponseFallback), within about a second of the first audio,
+ * so a longer silence means it cannot tell; before 2026-11-09 this was 15 s, which a viewer
+ * with AdBlock waited on every video.
+ */
+export const UNKNOWN_WAIT_MS = 5000;
+/**
+ * `waitedMs` for decideSource after a tick at `now` (the last at `lastTickAt`, 0 for none):
+ * the ad-free wall time between ticks, at most one second per tick. Ticks also run on
+ * events, so counting a whole tick each time would make the wait run fast.
+ */
+export function advanceDecidingMs(
+  waitedMs: number,
+  lastTickAt: number,
+  now: number,
+  adShowing: boolean,
+): number {
+  if (!lastTickAt || adShowing) return waitedMs;
+  return waitedMs + Math.min(Math.max(0, now - lastTickAt), 1000);
+}
+
 /** The creator track still not fetched after this long: use Whisper. */
 export const PENDING_WAIT_MS = 30_000;
 

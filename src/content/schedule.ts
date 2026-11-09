@@ -149,6 +149,30 @@ export function nextNeeded(
  * Whether a running job is no longer worth finishing for playhead `t`: the viewer is
  * past it, or it lies beyond what the scheduler would request now (after a seek back).
  */
+/**
+ * Whether a chunk whose audio is only partly buffered is sent now with what there is
+ * (`haveSeconds` from its start), rather than waiting for more. Short requests cost as much
+ * as 10 s ones, so only when the playhead is close, in wall seconds (a faster rate starts
+ * them earlier): 8 s or more when the chunk starts within 6 s; 3 s or more when it starts
+ * within 2 s and the playhead is within 3 s of the end of what is buffered. Without that
+ * last condition a start sent the first 3–6 s YouTube had appended (2 of 4 runs once the
+ * start no longer waited for the next tick), and a second request right after; YouTube
+ * appends faster than real time at a start, so a tick later the whole first chunk is there.
+ */
+export function sendWhatIsBuffered(opts: {
+  chunkStart: number;
+  haveSeconds: number;
+  playhead: number;
+  rate: number;
+}): boolean {
+  const rate = Math.max(1, opts.rate);
+  const margin = (opts.chunkStart - opts.playhead) / rate;
+  const ahead = (opts.chunkStart + opts.haveSeconds - opts.playhead) / rate;
+  return (
+    (margin < 6 && opts.haveSeconds >= 8) || (margin < 2 && opts.haveSeconds >= 3 && ahead < 3)
+  );
+}
+
 export function isIrrelevant(
   job: Pick<Job, "start" | "end">,
   t: number,

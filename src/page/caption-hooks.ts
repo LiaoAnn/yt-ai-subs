@@ -10,13 +10,18 @@ import {
   type CaptionModeMessage,
   type DisplayMode,
 } from "@/shared/messages";
-import { TRACK_CONFIG_STORAGE_KEY, parseTrackConfig } from "@/shared/track-config";
+import {
+  TRACK_CONFIG_STORAGE_KEY,
+  parseTrackConfig,
+  type TrackConfig,
+} from "@/shared/track-config";
 import { videoInfoFrom, type VideoInfo } from "@/shared/video-context";
 import { videoIdFromUrl } from "@/shared/youtube";
 import { DubTracker, playerPlaysDub } from "./audio-track";
 import {
   creatorMessage,
   creatorTick,
+  giveUpToken,
   installCreatorCaptions,
   noteResponse,
   noteTimedtextUrl,
@@ -28,6 +33,7 @@ import {
   isOurVssId,
   isPlayerEndpoint,
   isRequestedResponse,
+  lacksOurTrack,
   liveStatus,
   parseRequestBody,
   ourTrackVideoId,
@@ -44,6 +50,7 @@ interface YtPlayer extends HTMLElement {
   setOption?: (module: string, option: string, value: unknown) => void;
   getCurrentTime?: () => number;
   getPlayerState?: () => number;
+  getPlayerResponse?: () => unknown;
 }
 
 interface PlayerTrack {
@@ -132,25 +139,29 @@ function noteVideoInfo(response: unknown) {
   }
 }
 
+/** Player responses already handled, so a response seen twice is noted once. */
+const patchedResponses = new WeakSet<object>();
+/** Videos whose player response went through patch(). */
+const seenVideos = new Set<string>();
+
 /**
  * Notes a player response of a video the page asked for (its info, its length) and adds our
  * track to it; true if it changed it. Made-up responses never get here (hookFetch).
  */
 function patch(response: unknown): boolean {
-  noteVideoInfo(response);
-  try {
-    onPlayerResponse(response);
-  } catch {
-    // the observer must not break the page
+  if (typeof response === "object" && response !== null) {
+    if (patchedResponses.has(response)) return false;
+    patchedResponses.add(response);
+    const videoId = (response as { videoDetails?: { videoId?: unknown } }).videoDetails?.videoId;
+    if (typeof videoId === "string") {
+      seenVideos.add(videoId);
+      while (seenVideos.size > 50) seenVideos.delete(seenVideos.values().next().value!);
+    }
   }
   try {
-    const status = liveStatus(response);
-    // A stream that ended (watched again as a recording) is an ordinary video again.
-    if (status?.live) liveVideos.add(status.videoId);
-    else if (status) liveVideos.delete(status.videoId);
     const config = readConfig();
     // The creator's own track in our language replaces ours (creator-hooks.ts).
-    if (noteResponse(response, config)) return false;
+    if (note(response, config)) return false;
     const videoId = patchPlayerResponse(response, config);
     if (videoId) console.log(LOG_PREFIX, "caption track added to the player response", videoId);
     return videoId !== null;
@@ -158,6 +169,77 @@ function patch(response: unknown): boolean {
     console.warn(LOG_PREFIX, "could not add the caption track", error);
     return false;
   }
+}
+
+/**
+ * Takes what the page needs from a player response (info, length, live status, creator
+ * tracks); returns the creator track in our language that replaces our track, if any.
+ */
+function note(response: unknown, config: TrackConfig) {
+  noteVideoInfo(response);
+  try {
+    onPlayerResponse(response);
+  } catch {
+    // the observer must not break the page
+  }
+  const status = liveStatus(response);
+  // A stream that ended (watched again as a recording) is an ordinary video again.
+  if (status?.live) liveVideos.add(status.videoId);
+  else if (status) liveVideos.delete(status.videoId);
+  return noteResponse(response, config);
+}
+
+/** Videos whose player response in the player has no track of ours (checked once each). */
+const missedVideos = new Set<string>();
+const checkedVideos = new Set<string>();
+const MISSED_REASON = "AI 字幕軌沒加進播放器（播放器資料可能被其他擴充攔下）";
+
+/**
+ * Checks, once per video, the player's own player response: when it has no track of ours
+ * although it should (another extension's accessor on `ytInitialPlayerResponse` handed the
+ * player an object we never saw, or a path we do not hook), the health check falls back to
+ * the overlay now instead of after 8 s, and if the page never saw the video's response at
+ * all, its length, info and creator tracks are taken from this copy. Returns the reason
+ * when our track cannot appear.
+ */
+function playerResponseFallback(
+  player: YtPlayer,
+  videoId: string,
+  config: TrackConfig,
+): string | undefined {
+  if (missedVideos.has(videoId)) return MISSED_REASON;
+  if (checkedVideos.has(videoId)) return undefined;
+  let response: unknown;
+  try {
+    response = player.getPlayerResponse?.();
+  } catch {
+    return undefined;
+  }
+  const details = (response as { videoDetails?: { videoId?: unknown } } | null)?.videoDetails;
+  if (details?.videoId !== videoId) return undefined;
+  checkedVideos.add(videoId);
+  while (checkedVideos.size > 50) checkedVideos.delete(checkedVideos.values().next().value!);
+  try {
+    if (!seenVideos.has(videoId)) {
+      patchedResponses.add(response as object);
+      seenVideos.add(videoId);
+      note(response, config);
+    }
+    if (!lacksOurTrack(response, videoId, config, !!targetFor(videoId))) return undefined;
+  } catch (error) {
+    console.warn(LOG_PREFIX, "could not read the player's response", error);
+    return undefined;
+  }
+  missedVideos.add(videoId);
+  while (missedVideos.size > MAX_VIDEOS) missedVideos.delete(missedVideos.values().next().value!);
+  // No track of ours, so the player makes no timedtext request that would carry the token.
+  giveUpToken(videoId, "播放器沒有 AI 字幕軌，抓不到創作者字幕");
+  console.warn(
+    LOG_PREFIX,
+    `the player's response for ${videoId} has no AI track ` +
+      "(another extension may have replaced ytInitialPlayerResponse): using the overlay",
+  );
+  return MISSED_REASON;
 }
 
 /** The json3 body for a request of our track; records it as served. */
@@ -184,10 +266,54 @@ function logSkipped(response: unknown) {
   );
 }
 
-/** The first page load assigns `var ytInitialPlayerResponse = {...}` in an inline script. */
+/**
+ * The first page load assigns `var ytInitialPlayerResponse = {...}` in an inline script, and
+ * the next inline script hands it to the player (`ytplayer.bootstrapPlayerResponse =
+ * window['ytInitialPlayerResponse']`). Our setter patches it, unless another extension
+ * redefines the property after us (AdBlock did, 2026-11-09: our setter never ran, so no
+ * track, no length, no creator tracks). So the property is also read whenever the parser
+ * adds an element: mutation records are delivered in the microtask checkpoint the parser
+ * runs before each script, so a response assigned by one inline script is patched before
+ * the next one runs. Patching changes the object in place, whoever's accessor holds it.
+ */
+const readInitialPlayerResponse = () =>
+  (window as { ytInitialPlayerResponse?: unknown }).ytInitialPlayerResponse;
+
 function hookInitialPlayerResponse() {
-  let value: unknown = (window as { ytInitialPlayerResponse?: unknown }).ytInitialPlayerResponse;
+  const read = readInitialPlayerResponse;
+  // Once per video: a getter that hands out copies would otherwise be patched every time.
+  const patchUnseen = () => {
+    const current = read();
+    const videoId = (current as { videoDetails?: { videoId?: unknown } } | null)?.videoDetails
+      ?.videoId;
+    if (typeof videoId === "string" && !seenVideos.has(videoId)) patch(current);
+  };
+  let value: unknown = read();
   if (value !== undefined) patch(value);
+  try {
+    const observer = new MutationObserver(() => {
+      try {
+        patchUnseen();
+      } catch {
+        // someone else's getter threw: the player response fallback in control() remains
+      }
+    });
+    observer.observe(document, { childList: true, subtree: true });
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        observer.disconnect();
+        try {
+          patchUnseen();
+        } catch {
+          // as above
+        }
+      },
+      { once: true },
+    );
+  } catch (error) {
+    console.warn(LOG_PREFIX, "could not watch ytInitialPlayerResponse", error);
+  }
   try {
     Object.defineProperty(window, "ytInitialPlayerResponse", {
       configurable: true,
@@ -422,6 +548,10 @@ function control() {
     const dubbed = dubs.observe(videoId, adShowing, adShowing ? null : playerPlaysDub());
 
     const config = readConfig();
+    const missing =
+      player && videoId && !adShowing && config.enabled
+        ? playerResponseFallback(player, videoId, config)
+        : undefined;
     const track = videoId ? trackFor(videoId) : null;
     if (config.enabled && !dubbed) creatorTick(player, videoId, adShowing, CONTROL_MS);
     const creatorTarget = targetFor(videoId);
@@ -489,6 +619,7 @@ function control() {
       reloadWaitMs: track?.reloadAskedAt != null ? Date.now() - track.reloadAskedAt : 0,
       expected: track && selected ? activeEvents(track.served, t) : [],
       shown,
+      ...(missing ? { missing } : {}),
     };
     const verdict: { mode: DisplayMode; reason: string } = !config.enabled
       ? { mode: "overlay", reason: "AI 字幕已關閉" }

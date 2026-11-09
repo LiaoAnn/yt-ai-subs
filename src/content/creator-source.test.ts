@@ -3,7 +3,7 @@ import type { Cue } from "@/shared/captions";
 import { PAGE_MESSAGE_TAG, type CreatorCaptionsMessage } from "@/shared/messages";
 import {
   PENDING_WAIT_MS,
-  UNKNOWN_WAIT_MS,
+  advanceDecidingMs,
   decideSource,
   linesForChunk,
   mergeCachedTranslations,
@@ -29,13 +29,11 @@ const events = (texts: string[], startMs = 0, stepMs = 3000) =>
 describe("decideSource", () => {
   it("waits for the page script, then gives up and uses Whisper", () => {
     expect(decideSource(undefined, 0, SETTINGS).kind).toBe("deciding");
-    expect(decideSource(reply({ status: "unknown" }), UNKNOWN_WAIT_MS - 1, SETTINGS).kind).toBe(
-      "deciding",
-    );
-    expect(decideSource(undefined, UNKNOWN_WAIT_MS, SETTINGS).kind).toBe("whisper");
+    // 5 s: the page script answers within about a second when it saw the player response.
+    expect(decideSource(reply({ status: "unknown" }), 4999, SETTINGS).kind).toBe("deciding");
+    expect(decideSource(undefined, 5000, SETTINGS).kind).toBe("whisper");
     expect(
-      decideSource(reply({ status: "pending", languageCode: "ja" }), UNKNOWN_WAIT_MS, SETTINGS)
-        .kind,
+      decideSource(reply({ status: "pending", languageCode: "ja" }), 5000, SETTINGS).kind,
     ).toBe("deciding");
     expect(
       decideSource(reply({ status: "pending", languageCode: "ja" }), PENDING_WAIT_MS, SETTINGS)
@@ -168,5 +166,17 @@ describe("linesForChunk", () => {
       "on screen at the seek",
       "mine",
     ]);
+  });
+});
+
+describe("advanceDecidingMs", () => {
+  it("counts wall time between ticks, at most one tick's worth, and nothing during ads", () => {
+    expect(advanceDecidingMs(0, 0, 10_000, false)).toBe(0); // the first tick starts the clock
+    // Extra ticks within a second (events) add only the time that passed.
+    expect(advanceDecidingMs(0, 10_000, 10_050, false)).toBe(50);
+    expect(advanceDecidingMs(50, 10_050, 11_000, false)).toBe(1000);
+    // A throttled background tab ticking late does not jump the clock.
+    expect(advanceDecidingMs(1000, 11_000, 20_000, false)).toBe(2000);
+    expect(advanceDecidingMs(1000, 11_000, 12_000, true)).toBe(1000);
   });
 });

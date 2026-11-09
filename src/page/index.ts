@@ -73,6 +73,25 @@ function observePlayerResponse(response: unknown) {
   if (length) videoLengths.set(length.videoId, length.seconds);
 }
 
+/**
+ * The length of `videoId` from the player's own player response, for a video whose response
+ * the page never saw (another extension redefined `ytInitialPlayerResponse`): without it,
+ * the main MediaSource would wait HOLD_MS for the fallback rule.
+ */
+function playerLength(videoId: string): number | null {
+  try {
+    const player = document.getElementById("movie_player") as
+      | (HTMLElement & { getPlayerResponse?: () => unknown })
+      | null;
+    const length = lengthSecondsOf(player?.getPlayerResponse?.());
+    if (length?.videoId !== videoId) return null;
+    videoLengths.set(length.videoId, length.seconds);
+    return length.seconds;
+  } catch {
+    return null;
+  }
+}
+
 function postSegment(message: SegmentMessage) {
   post(message, [message.bytes]);
 }
@@ -104,7 +123,7 @@ function install() {
     const { gate } = state;
     if (gate.kind !== "pending") return;
     const mainId = videoIdFromUrl(location.href);
-    const mainLength = mainId ? (videoLengths.get(mainId) ?? null) : null;
+    const mainLength = mainId ? (videoLengths.get(mainId) ?? playerLength(mainId)) : null;
     const release = gate.update({
       duration: source.duration,
       mainLength,
