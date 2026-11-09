@@ -1,6 +1,6 @@
 {
   "name": "yt-ai-subs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Chrome extension that transcribes (and optionally translates) YouTube audio a few chunks ahead of the playhead.",
   "type": "module",
