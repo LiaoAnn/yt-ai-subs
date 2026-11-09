@@ -3,7 +3,11 @@
 // runs in agent-browser without calling Groq. How to use it: the "Quota levels without
 // Groq" section of .claude/skills/test-extension-in-browser/SKILL.md.
 //
-//   node test/fake-groq/fake-groq.mjs <browser CDP ws url> <control.json> <log.jsonl>
+//   node test/fake-groq/fake-groq.mjs <browser CDP ws url> <control.json> <log.jsonl> [<body dir>]
+//
+// With <body dir>, each Whisper request body (multipart: the chunk's WAV, the prompt, the
+// model) is also saved there as <ms>-<n>.multipart, and logged as a "saved" line, so the
+// same audio can be sent to Groq again later (chunk-replay.py in the skill folder).
 //
 // It is a CDP client (it listens on nothing): it attaches to every extension service worker,
 // also ones that start later (they wait until interception is on), enables Fetch for
@@ -17,11 +21,13 @@
 //    "chat": {"remaining": 900, "limit": 1000}}
 // remaining/limit become x-ratelimit-{remaining,limit}-requests (the daily request budget,
 // reset in 2 h). Each request is logged to log.jsonl (one JSON object per line).
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
-const [wsUrl, controlPath, logPath] = process.argv.slice(2);
+const [wsUrl, controlPath, logPath, bodyDir] = process.argv.slice(2);
 if (!wsUrl || !controlPath || !logPath) {
-  console.error("usage: node fake-groq.mjs <browser CDP ws url> <control.json> <log.jsonl>");
+  console.error(
+    "usage: node fake-groq.mjs <browser CDP ws url> <control.json> <log.jsonl> [<body dir>]",
+  );
   process.exit(2);
 }
 
@@ -118,6 +124,14 @@ async function onPaused({ requestId, request }, sessionId) {
   let body;
   if (kind === "whisper") {
     body = whisperBody();
+    if (bodyDir) {
+      // postDataEntries carry the bytes as base64; postData would mangle the binary WAV.
+      const entries = request.postDataEntries ?? [];
+      const bytes = Buffer.concat(entries.map((e) => Buffer.from(e.bytes ?? "", "base64")));
+      const name = `${Date.now()}-${whisperCount}.multipart`;
+      writeFileSync(`${bodyDir}/${name}`, bytes);
+      log({ event: "saved", name, bytes: bytes.length });
+    }
   } else {
     const chat = chatBody(request.postData ?? "");
     body = chat.body;
