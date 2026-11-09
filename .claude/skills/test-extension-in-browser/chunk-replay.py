@@ -17,7 +17,9 @@ test-extension-in-browser skill, section 8, "Replaying the same audio".
       sends each job through the extension's background (popup page, real key, the real
       limiter); jobs: [{"id", "vid", "lang", "file": "<id>/<run>-<start>.wav", "seconds",
       "context"}]; a job already in results.jsonl is skipped. Stops at the caps, at an
-      error, or when Groq reports under 30% of the daily Whisper requests left.
+      error, or when Groq reports under 30% of the daily Whisper requests left. The caps
+      count jobs: the background retries a 429 up to twice, so keep them a little under
+      the budget.
 
 Holds other people's audio and text: keep <out-dir> in .qa/ or a scratchpad, never in git.
 """
@@ -175,11 +177,20 @@ def cut(qa, out, ids):
     for vid in ids:
         recorded = sorted(json.load(open(f"{out}/{vid}.recorded.json")).values(), key=lambda c: c["start"])
         bodies = [pcm(multipart_file(f"{out}/bodies/{n}")) for n in groups.get(vid, [])]
-        # Concurrent requests can arrive out of order: match recorded chunks to bodies by length.
+        # Concurrent requests can arrive out of order: match recorded chunks to bodies by
+        # length, and among equal lengths by the recorded envelope.
         timeline, used = [], set()
+        envelopes = [envelope(a) for a in bodies]
+
+        def distance(j, ref):
+            return sum(abs(x - y) for x, y in zip(envelopes[j], ref)) / max(1, len(ref))
+
         for c in recorded:
+            if not c.get("sentSeconds"):
+                continue  # skipped by voice detection in the fake run: no audio was sent
             n = round(c["sentSeconds"] * SR)
-            j = next((j for j, a in enumerate(bodies) if j not in used and abs(len(a) - n) <= 2), None)
+            fits = [j for j, a in enumerate(bodies) if j not in used and abs(len(a) - n) <= 2]
+            j = min(fits, key=lambda j: distance(j, c["envelope"])) if fits else None
             if j is None:
                 print(vid, "no recorded audio for the chunk at", c["start"])
                 continue
@@ -212,11 +223,18 @@ def cut(qa, out, ids):
                     continue
                 a = take(c["start"], c["sentSeconds"])
                 if a is None:
-                    print(f"  {vid} {run} {c['start']:.2f}: not in the recorded audio")
+                    # Voice detection skips a stretch without voice, so the fake run sent no audio there.
+                    print(f"  {vid} {run} {c['start']:.2f}: not in the recorded audio (a stretch the fake run skipped?), skipped")
                     continue
-                mine, theirs = envelope(a), c["envelope"]
+                mine, theirs = envelope(a), c.get("envelope") or []
+                if not theirs or abs(len(mine) - len(theirs)) > 1:
+                    print(f"  {vid} {run} {c['start']:.2f}: envelope of {len(theirs)} frames, cut has {len(mine)}: not compared, skipped")
+                    continue
                 diffs = [abs(x - y) for x, y in zip(mine, theirs) if x > -90 or y > -90]
-                mean = sum(diffs) / max(1, len(diffs))
+                if not diffs:
+                    print(f"  {vid} {run} {c['start']:.2f}: silent throughout, cannot be checked, skipped")
+                    continue
+                mean = sum(diffs) / len(diffs)
                 name = f"{run}-{c['start']:.2f}.wav"
                 with open(f"{out}/chunks/{vid}/{name}", "wb") as f:
                     f.write(wav_bytes(a))
