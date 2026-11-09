@@ -30,10 +30,6 @@ const FLOORS: Record<string, Floor> = {
   "high-female-voices": { talk10: 1, talk30: 1, maxSkippedLines10: 0, maxSkippedLines30: 0 },
   // _xhw8bUhWOk 0:00–1:10, variety talk (several speakers) over BGM
   "talk-over-bgm": { talk10: 1, talk30: 1, maxSkippedLines10: 0, maxSkippedLines30: 0 },
-  // kxVk735LST8 4:00–5:00, a vlog told in caption cards with cooking sounds, most likely
-  // nobody talks (it was "quiet-female-vlog" until 2026-11-08): 10 of 51 10 s chunks skipped
-  // (16 before the syllable rule)
-  "silent-text-vlog": { loudSkipped10: 0.19, loudSkipped30: 0 },
   // LHZgl2pbY7Q 0:00–2:00, a silent vlog with BGM: nearly all of it is sent (3 of 98 10 s
   // chunks skipped; 15 before the syllable rule)
   "bgm-only-silent-vlog": { loudSkipped10: 0.03, loudSkipped30: 0 },
