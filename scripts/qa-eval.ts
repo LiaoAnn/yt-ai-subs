@@ -75,6 +75,15 @@ interface Evaluated {
 }
 
 function truthOf(gt: GroundTruth, video: DatasetVideo): { speech: SpeechTruth; caption: Truth } {
+  if (video.backgroundSpeech) {
+    // Someone talks in the background (a TV show), not the creator: no talk to recall and
+    // no stretch known to be silent, so every chunk and segment is unsure.
+    const supports = { cer: false, recall: false, precision: false, translation: false };
+    return {
+      speech: { speech: [], lines: [], anySpeech: null, precision: false },
+      caption: { speech: [], lines: [], anySpeech: null, reference: null, supports },
+    };
+  }
   if (video.noSpeech) {
     // Nobody talks: every chunk is a no-speech chunk, every kept line is made up.
     // Stretches where someone talks after all are unsure: neither speech nor no speech.
@@ -175,6 +184,7 @@ function table(rows: string[][]): string {
 
 function supportsText(gt: GroundTruth | null, video: DatasetVideo): string {
   if (video.noSpeech) return "no speech";
+  if (video.backgroundSpeech) return "background speech";
   if (!gt) return "-";
   const s = gt.supports;
   return (
