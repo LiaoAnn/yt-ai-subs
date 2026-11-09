@@ -2,6 +2,7 @@
 // through the shared rate limiter. Never log the API key or request headers.
 
 import type { Cue } from "@/shared/captions";
+import type { FailedReply } from "@/shared/messages";
 import { parseReplyTerms } from "@/shared/glossary";
 import { WHISPER_PROMPT_CHARS } from "@/shared/video-context";
 import { LOG_PREFIX } from "@/shared/log";
@@ -102,6 +103,17 @@ export function isRetryable(error: unknown): boolean {
     error.status >= 500 ||
     error.code === "json_validate_failed"
   );
+}
+
+/** The reply for a request that threw; `retryable` when sending it again may help. */
+export function failedReply(error: unknown, aborted: boolean): FailedReply {
+  if (aborted) return { ok: false, error: "cancelled", aborted: true };
+  return {
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    aborted: false,
+    ...(isRetryable(error) ? { retryable: true } : {}),
+  };
 }
 
 async function errorFrom(response: Response, what: string): Promise<GroqError> {

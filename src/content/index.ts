@@ -66,6 +66,7 @@ import {
   type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
+import { translateWithRetry, type OkTranslateReply } from "./translation-attempts";
 import { awaitingTrackVerdict, schedulingPause } from "./watching";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
@@ -88,8 +89,6 @@ const DEBUG_LOG_MS = 10_000;
 /** A flexible chunk end moves to the quietest moment up to this far earlier or later. */
 const CUT_EARLIER_SECONDS = 6;
 const CUT_LATER_SECONDS = 4;
-/** Pause before sending a failed translation once more. */
-const TRANSLATION_RETRY_MS = 2000;
 /** A chunk waits at most this long for the chunk before it, to use it as context. */
 const CONTEXT_WAIT_MS = 5000;
 /**
@@ -546,40 +545,44 @@ async function translateLines(
     if (signal.aborted || state !== target) return false;
   }
   if (!maySend()) return false;
-  // At most one more request per chunk: the whole chunk again after a failure that may
-  // pass (Groq's error, unreadable JSON), or only the lines the reply left out.
-  let extraRequest = true;
-  let tr = await requestTranslation(target, job, fresh);
-  if (signal.aborted || state !== target) return false;
-  if (tr && !tr.ok && tr.retryable) {
-    extraRequest = false;
-    console.warn(LOG_PREFIX, `translation ${label} failed, trying once more:`, tr.error);
-    await waitUntil(() => false, TRANSLATION_RETRY_MS, signal);
-    if (signal.aborted || state !== target) return false;
-    tr = await requestTranslation(target, job, fresh);
-    if (signal.aborted || state !== target) return false;
-  }
-  if (tr?.ok) quota = tr.quota;
-  else if (tr?.quotaPaused) quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
-  if (!tr?.ok) {
+  const outcome = await translateWithRetry(fresh, {
+    send: async (lines) => {
+      const reply = await requestTranslation(target, job, lines);
+      if (reply?.ok) quota = reply.quota;
+      else if (reply?.quotaPaused)
+        quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
+      return reply;
+    },
+    alive: () => !signal.aborted && state === target,
+    wait: (ms) => waitUntil(() => false, ms, signal).then(() => {}),
+    apply: (lines, reply) =>
+      applyTranslation(
+        target,
+        job,
+        lines,
+        reply,
+        lines === fresh ? label : `${label} (${lines.length} left out)`,
+      ),
+    mayAskAgain: () => !translationPaused(quota),
+    onRetry: (error) =>
+      console.warn(LOG_PREFIX, `translation ${label} failed, trying once more:`, error),
+  });
+  if (outcome.kind === "cancelled") return false;
+  if (outcome.kind === "failed") {
     job.untranslated = true;
-    target.lastError = tr ? tr.error : "翻譯沒有回應";
+    target.lastError = outcome.reply ? outcome.reply.error : "翻譯沒有回應";
     console.warn(LOG_PREFIX, `translation ${label} failed:`, target.lastError);
     return true;
   }
-  applyTranslation(target, job, fresh, tr, label);
-  const missing = tr.missing.map((i) => fresh[i]).filter((cue) => cue !== undefined);
-  if (missing.length && extraRequest && !translationPaused(quota)) {
-    // The reply skipped lines (they show the original): ask for those alone, with the
-    // chunk's translated lines before them as context.
-    const again = await requestTranslation(target, job, missing);
-    if (signal.aborted || state !== target) return false;
-    if (again?.ok) {
-      quota = again.quota;
-      applyTranslation(target, job, missing, again, `${label} (${missing.length} left out)`);
-    }
-    const still = again?.ok ? again.missing.length : missing.length;
-    if (still) console.warn(LOG_PREFIX, `translation ${label}: ${still} lines left untranslated`);
+  // Lines still left out keep their original as the translation, as before: the chunk
+  // counts as translated (cached, and a creator chunk's later rounds do not pick them up).
+  if (outcome.missing.length) {
+    for (const cue of outcome.missing) cue.translation = cue.original;
+    target.cuesVersion++;
+    console.warn(
+      LOG_PREFIX,
+      `translation ${label}: ${outcome.missing.length} lines left untranslated`,
+    );
   }
   target.lastError = "";
   return true;
@@ -614,7 +617,7 @@ function applyTranslation(
   target: VideoState,
   job: JobRecord,
   lines: Cue[],
-  tr: Extract<TranslateReply, { ok: true }>,
+  tr: OkTranslateReply,
   label: string,
 ) {
   // A chunk translated alongside this one may have fixed a term's rendering first.

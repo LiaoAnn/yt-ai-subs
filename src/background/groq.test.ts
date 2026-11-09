@@ -5,6 +5,7 @@ import {
   captionNotesRule,
   GroqError,
   estimateChatTokens,
+  failedReply,
   isRetryable,
   numberLines,
   parseTranslatedLines,
@@ -169,6 +170,81 @@ describe("billing with a mocked Groq", () => {
     expect(isRetryable(error)).toBe(true);
     const entry = limiter.snapshot().entries.chat[0]!;
     expect(entry.cost).toEqual({ requests: 1, tokens: 0 });
+  });
+});
+
+describe("failed translations through translate()", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const settings = { ...DEFAULT_SETTINGS, groqApiKey: "gsk_fake_not_a_real_key" };
+  const signal = new AbortController().signal;
+  const reply = () =>
+    translate(new RateLimiter(), settings, ["x"], "", signal, () => {}).then(
+      () => ({ ok: true }),
+      (e: unknown) => failedReply(e, false),
+    );
+
+  it("marks Groq's json_validate_failed 400 as retryable, not other 400s or a bad key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: { message: "Failed to generate JSON", code: "json_validate_failed" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    expect(await reply()).toMatchObject({ ok: false, retryable: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { message: "bad" } }, { status: 400 })),
+    );
+    expect(await reply()).not.toHaveProperty("retryable");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { code: "invalid_api_key" } }, { status: 401 })),
+    );
+    expect(await reply()).not.toHaveProperty("retryable");
+  });
+
+  it("marks an unreadable reply as retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ choices: [{ message: { content: '{"1": ' } }] })),
+    );
+    expect(await reply()).toMatchObject({
+      ok: false,
+      error: "翻譯格式看不懂",
+      retryable: true,
+    });
+  });
+
+  it("never marks a cancelled request as retryable", () => {
+    expect(failedReply(new GroqError("x", 503), true)).toEqual({
+      ok: false,
+      error: "cancelled",
+      aborted: true,
+    });
+  });
+
+  it("keeps the request but frees the tokens of a 429 retried by the limiter", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        ++calls === 1
+          ? Response.json({}, { status: 429, headers: { "retry-after": "0.01" } })
+          : Response.json({
+              choices: [{ message: { content: '{"1": "好"}' } }],
+              usage: { total_tokens: 300 },
+            }),
+      ),
+    );
+    const limiter = new RateLimiter();
+    await translate(limiter, settings, ["x"], "", signal, () => {});
+    expect(limiter.snapshot().entries.chat.map((entry) => entry.cost)).toEqual([
+      { requests: 1, tokens: 0 },
+      { requests: 1, tokens: 300 },
+    ]);
   });
 });
 
