@@ -378,6 +378,16 @@ describe("repetitiveFallbacks", () => {
     expect(flagged.has(meal[0]!)).toBe(false);
   });
 
+  it("drops the whole window from 3 in 4 looping segments on", () => {
+    const loops = ["塩コショウ", "オイル", "塩コショウ", "オイル", "塩コショウ", "オイル"];
+    const at75 = window(["今日はいい天気", ...loops, "明日も晴れ"], 0.2);
+    expect(repetitiveFallbacks(at75).size).toBe(8);
+    const under = window(["今日はいい天気", ...loops, "明日も晴れ", "週末は山へ"], 0.2);
+    const flagged = repetitiveFallbacks(under);
+    expect(flagged.size).toBe(6);
+    expect(flagged.has(under[0]!)).toBe(false);
+  });
+
   it("keeps a long fallback window of real talk whose sentences share a sequence or two", () => {
     // LKTOWTc9l1E 182 s: real talk at temperature 0.2, 183 characters, distinctPairs 0.74
     const talk = window(
@@ -395,6 +405,37 @@ describe("repetitiveFallbacks", () => {
       0.2,
     );
     expect(repetitiveFallbacks(talk).size).toBe(0);
+  });
+});
+
+describe("segmentDecisions on unsure fallback windows", () => {
+  const unsure = (texts: string[]) =>
+    texts.map((text, i) => ({
+      start: i,
+      end: i + 1,
+      text,
+      temperature: 0.4,
+      compression_ratio: 1.5,
+      avg_logprob: -0.9,
+    }));
+
+  it("drops all of an unsure window that repeats itself, lines said once included", () => {
+    const decisions = segmentDecisions({
+      segments: unsure([
+        "塩コショウオイルを入れます",
+        "はい",
+        "塩コショウオイルを入れます",
+        "うん",
+      ]),
+    });
+    expect(decisions.map((d) => d.reason)).toEqual(Array(4).fill("unsure fallback decode"));
+  });
+
+  it("keeps an unsure window of varied talk (nOSYk1M9KBo 139 s)", () => {
+    const decisions = segmentDecisions({
+      segments: unsure(["오!", "진짜 가는 거예요", "오! 재밌는데?", "그렇지!", "어우 되게 무겁다"]),
+    });
+    expect(decisions.map((d) => d.reason)).toEqual(Array(5).fill(""));
   });
 });
 
