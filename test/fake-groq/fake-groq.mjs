@@ -19,6 +19,11 @@
 //   {"delayMs": 0,
 //    "whisper": {"remaining": 1900, "limit": 2000},
 //    "chat": {"remaining": 900, "limit": 1000}}
+// Optional, to model dense talk (e.g. a talk show) instead of two short lines per chunk:
+//   "whisperLineEvery": 2.5   one line every 2.5 s over the whole chunk (from the WAV length)
+//   "chatTokens": 1500        usage.total_tokens reported for every translation (default 500)
+//   "chatDelayMs": 3000       extra delay for translations only
+//   "chatFailEvery": 4        every 4th translation answers 500 (a failed translation)
 // remaining/limit become x-ratelimit-{remaining,limit}-requests (the daily request budget,
 // reset in 2 h). Each request is logged to log.jsonl (one JSON object per line).
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -35,6 +40,7 @@ const ws = new WebSocket(wsUrl);
 let nextId = 1;
 const pending = new Map();
 let whisperCount = 0;
+let chatCount = 0;
 /** Service workers already intercepted (getTargets and auto-attach can both report one). */
 const attached = new Set();
 
@@ -56,13 +62,33 @@ function headersFor(kind) {
   }).map(([name, value]) => ({ name, value }));
 }
 
-/** Two short Japanese lines at 1–3 s and 4–6 s of the chunk, numbered so none repeats. */
-function whisperBody() {
+/** Seconds of 16 kHz 16-bit mono audio in a multipart body (0 if unknown). */
+function wavSeconds(request) {
+  const entries = request.postDataEntries ?? [];
+  const bytes = entries.reduce((sum, e) => sum + Buffer.from(e.bytes ?? "", "base64").length, 0);
+  return bytes > 2000 ? (bytes - 1000) / 32000 : 0;
+}
+
+/**
+ * Two short Japanese lines at 1–3 s and 4–6 s of the chunk, numbered so none repeats; with
+ * `lineEvery`, one line every that many seconds over the chunk.
+ */
+function whisperBody(seconds = 0, lineEvery = 0) {
   const n = ++whisperCount;
-  const plan = [
+  let plan = [
     [1.0, 3.0, ["偽の字幕", `その${n}番`, "です。"]],
     [4.0, 6.0, ["テスト", `${n}回目の`, "二行目。"]],
   ];
+  if (lineEvery > 0 && seconds > lineEvery) {
+    plan = [];
+    for (let i = 0, at = 0.3; at + lineEvery - 0.3 <= seconds - 0.5; i++, at += lineEvery) {
+      plan.push([
+        at,
+        at + lineEvery - 0.4,
+        ["偽の会話", `第${n}組の`, `${i + 1}行目`, "ですよね。"],
+      ]);
+    }
+  }
   const words = [];
   const segments = plan.map(([start, end, parts]) => {
     const step = (end - start) / parts.length;
@@ -82,14 +108,14 @@ function whisperBody() {
   return {
     text: segments.map((s) => s.text).join(""),
     language: "japanese",
-    duration: 10,
+    duration: seconds || 10,
     segments,
     words,
   };
 }
 
 /** Translates each numbered line as "【假譯】<line>". */
-function chatBody(postData) {
+function chatBody(postData, tokens = 500) {
   let lines = {};
   try {
     const user = JSON.parse(postData).messages[1].content;
@@ -101,7 +127,7 @@ function chatBody(postData) {
   return {
     body: {
       choices: [{ message: { content: JSON.stringify(out) } }],
-      usage: { total_tokens: 500 },
+      usage: { total_tokens: tokens },
     },
     lines: Object.keys(out).length,
   };
@@ -118,12 +144,15 @@ async function onPaused({ requestId, request }, sessionId) {
     await send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId);
     return;
   }
-  const { delayMs = 0 } = control();
+  const { delayMs = 0, chatDelayMs = 0, whisperLineEvery = 0, chatTokens = 500 } = control();
+  const { chatFailEvery = 0 } = control();
   log({ event: `${kind}-start`, remaining: control()[kind].remaining });
-  if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  const delay = delayMs + (kind === "chat" ? chatDelayMs : 0);
+  if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
   let body;
+  let status = 200;
   if (kind === "whisper") {
-    body = whisperBody();
+    body = whisperBody(wavSeconds(request), whisperLineEvery);
     if (bodyDir) {
       // postDataEntries carry the bytes as base64; postData would mangle the binary WAV.
       const entries = request.postDataEntries ?? [];
@@ -133,20 +162,25 @@ async function onPaused({ requestId, request }, sessionId) {
       log({ event: "saved", name, bytes: bytes.length });
     }
   } else {
-    const chat = chatBody(request.postData ?? "");
+    chatCount++;
+    const chat = chatBody(request.postData ?? "", chatTokens);
     body = chat.body;
+    if (chatFailEvery > 0 && chatCount % chatFailEvery === 0) {
+      status = 500;
+      body = { error: { message: "fake failure" } };
+    }
   }
   await send(
     "Fetch.fulfillRequest",
     {
       requestId,
-      responseCode: 200,
+      responseCode: status,
       responseHeaders: headersFor(kind),
       body: Buffer.from(JSON.stringify(body)).toString("base64"),
     },
     sessionId,
   );
-  log({ event: `${kind}-done` });
+  log({ event: `${kind}-done`, status });
 }
 
 ws.addEventListener("open", async () => {

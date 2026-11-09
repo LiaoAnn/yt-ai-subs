@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { RateLimiter, acquire, parseResetDuration, type HeaderSource } from "./rate-limiter";
+import {
+  RECHECK_MS,
+  RateLimiter,
+  acquire,
+  parseResetDuration,
+  type HeaderSource,
+} from "./rate-limiter";
 
 const headers = (values: Record<string, string>): HeaderSource => ({
   get: (name) => values[name] ?? null,
@@ -121,6 +127,17 @@ describe("acquire", () => {
     expect(slot.waitedMs).toBeGreaterThanOrEqual(25);
     // The new request now fills the window.
     expect(limiter.delayFor("whisper", { requests: 1 }, Date.now())).toBeGreaterThan(0);
+  });
+
+  it("notices a corrected estimate instead of sleeping until it leaves the window", async () => {
+    const limiter = new RateLimiter({
+      whisper: [],
+      chat: [{ dimension: "tokens", max: 100, windowMs: 60_000 }],
+    });
+    const first = limiter.record("chat", { tokens: 80 }, Date.now());
+    setTimeout(() => limiter.adjust("chat", first, { tokens: 10 }), 50);
+    const slot = await acquire(limiter, "chat", { tokens: 50 });
+    expect(slot.waitedMs).toBeLessThan(2 * RECHECK_MS);
   });
 
   it("rejects when aborted while waiting", async () => {

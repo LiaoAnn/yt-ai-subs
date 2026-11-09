@@ -22,7 +22,7 @@ import {
   type UsageLedger,
 } from "@/shared/quota";
 import { loadSettings } from "@/shared/settings";
-import { transcribe, translate } from "./groq";
+import { isRetryable, transcribe, translate } from "./groq";
 import { RateLimiter, type Cost, type LimiterState, type RequestKind } from "./rate-limiter";
 
 console.log(LOG_PREFIX, "background service worker loaded");
@@ -160,13 +160,15 @@ async function handle(
     return {
       ok: true,
       lines: result.lines,
+      missing: result.missing,
       totalTokens: result.totalTokens,
       terms: result.terms,
       ...result.stats,
       quota: await currentLevels(),
     };
   } catch (error) {
-    return failure(error, signal);
+    const failed = failure(error, signal);
+    return isRetryable(error) && !failed.aborted ? { ...failed, retryable: true } : failed;
   } finally {
     inFlight.delete(key);
   }

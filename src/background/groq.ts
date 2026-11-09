@@ -27,6 +27,8 @@ export class GroqError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** Groq's error code, e.g. "json_validate_failed". */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "GroqError";
@@ -58,6 +60,11 @@ async function limitedFetch(
     const sent = Date.now();
     const response = await fetch(url, { ...init, signal });
     limiter.noteHeaders(kind, response.headers, Date.now());
+    if (response.status === 429 || response.status >= 500) {
+      // Refused or failed: nothing was billed, so the estimate must not hold the budget
+      // (a failed translation's estimate made the next one wait 64 s). Keep the request.
+      limiter.adjust(kind, slot.id, unbilled(cost));
+    }
     if (response.status === 429 && attempt < MAX_429_RETRIES) {
       const blockedMs = limiter.noteTooManyRequests(kind, response.headers, Date.now());
       onLimiterChange();
@@ -73,17 +80,44 @@ async function limitedFetch(
   }
 }
 
+/** `cost` with everything but the request count set to 0. */
+function unbilled(cost: Cost): Cost {
+  return Object.fromEntries(
+    Object.keys(cost).map((key) => [key, key === "requests" ? cost.requests : 0]),
+  );
+}
+
+/**
+ * Errors worth one more try: Groq's own failures, a 429 after the retries, a reply we could
+ * not read (the model's JSON, or Groq's "json_validate_failed" 400 when the model wrote
+ * invalid JSON in JSON mode; at temperature 0.2 another try is sampled anew),
+ * and a network failure. Not a bad key, a wrong model or a request Groq rejects as such.
+ */
+export function isRetryable(error: unknown): boolean {
+  if (error instanceof TypeError) return true; // fetch: network error
+  if (!(error instanceof GroqError)) return false;
+  return (
+    error.status === undefined ||
+    error.status === 429 ||
+    error.status >= 500 ||
+    error.code === "json_validate_failed"
+  );
+}
+
 async function errorFrom(response: Response, what: string): Promise<GroqError> {
   let detail = "";
+  let code: string | undefined;
   try {
-    const json = (await response.json()) as { error?: { message?: string } };
+    const json = (await response.json()) as { error?: { message?: string; code?: unknown } };
     detail = json.error?.message ?? "";
+    if (typeof json.error?.code === "string") code = json.error.code;
   } catch {
     // not JSON; the status is enough
   }
   return new GroqError(
     `${what} ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`,
     response.status,
+    code,
   );
 }
 
@@ -143,6 +177,8 @@ export async function transcribe(
 
 export interface TranslateResult {
   lines: string[];
+  /** Indexes of lines the reply left out (returned as the original). */
+  missing: number[];
   totalTokens: number;
   /** Names and terms the model says it translated (source -> translation), unchecked. */
   terms: Record<string, unknown>;
@@ -194,11 +230,19 @@ function targetLanguageName(settings: Settings): string {
   );
 }
 
-/** Rough token estimate for the limiter before the real usage is known. */
-export function estimateChatTokens(promptChars: number, lineCount: number): number {
-  // CJK text runs about one token per character; output and low-effort reasoning add a
-  // few hundred more. The entry is corrected with usage.total_tokens afterwards.
-  return Math.ceil(promptChars * 1.1) + lineCount * 40 + 400;
+/**
+ * Rough token estimate for the limiter before the real usage is known. Kana, kanji and
+ * Hangul run about one token per character, English about one per four; each line's
+ * translation and the low-effort reasoning add the rest. The entry is corrected with
+ * usage.total_tokens afterwards. Counting the English system prompt (about 2,300
+ * characters) as CJK made every request look 1,700 tokens bigger than it was, so three
+ * translations within a minute already waited for the 7,500 tokens/min ceiling.
+ */
+export function estimateChatTokens(prompt: string, lineCount: number): number {
+  let ascii = 0;
+  for (const char of prompt) if (char.charCodeAt(0) < 128) ascii++;
+  const other = [...prompt].length - ascii;
+  return Math.ceil(ascii / 4 + other) + lineCount * 40 + 400;
 }
 
 /** Numbers lines from 1, as the JSON object the model sees: {"1": "...", "2": "..."}. */
@@ -273,7 +317,7 @@ The input is a JSON object of numbered lines, consecutive pieces of speech from 
 Reply ONLY with a JSON object with exactly the same numbered keys, plus "terms": {"1": "...", "2": "...", ..., "terms": {...}}.
 "terms" maps each name of a person, group, show or place, and each recurring special term, in these lines (written exactly as in the line, without particles or endings) to how you translated it. Ordinary words are not terms. Use {} when there are none.`;
   const user = translationUserMessage(lines, context, extras);
-  const estimate = estimateChatTokens(system.length + user.length, lines.length);
+  const estimate = estimateChatTokens(system + user, lines.length);
   const { response, entryId, stats } = await limitedFetch(
     limiter,
     "chat",
@@ -320,6 +364,7 @@ Reply ONLY with a JSON object with exactly the same numbered keys, plus "terms":
   if (!translated) throw new GroqError("翻譯格式看不懂");
   return {
     lines: lines.map((line, i) => translated[i] ?? line),
+    missing: lines.flatMap((_, i) => (translated[i] === undefined ? [i] : [])),
     totalTokens,
     terms: parseReplyTerms(content) ?? {},
     stats,

@@ -309,6 +309,8 @@ export interface FailedReply {
   aborted: boolean;
   /** Not sent: translation is paused to keep the rest of the day's budget. */
   quotaPaused?: boolean;
+  /** Worth sending again (a server error, a reply that could not be read, a 429). */
+  retryable?: boolean;
 }
 
 export interface CallTimings {
@@ -335,5 +337,7 @@ export type TranslateReply =
       totalTokens: number;
       /** Names and terms the translator says it translated: source -> translation. */
       terms: Record<string, unknown>;
+      /** Indexes of lines the reply left out; they come back as the original. */
+      missing: number[];
     } & CallTimings)
   | FailedReply;
