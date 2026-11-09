@@ -6,6 +6,7 @@ import {
   activeEvents,
   isPlayerEndpoint,
   isRequestedResponse,
+  lacksOurTrack,
   liveStatus,
   parseRequestBody,
   ourTrackVideoId,
@@ -45,6 +46,32 @@ describe("live streams", () => {
     expect(patchPlayerResponse(vod, DEFAULT_TRACK_CONFIG)).toBe("vod1");
     expect(liveStatus(null)).toBeNull();
     expect(liveStatus({ videoDetails: {} })).toBeNull();
+  });
+});
+
+describe("lacksOurTrack", () => {
+  it("is true for the player's response of a video the page never patched", () => {
+    // AdBlock (2026-11-09): the response reached the player without captions or our track.
+    expect(lacksOurTrack(playable(), "abc123", DEFAULT_TRACK_CONFIG, false)).toBe(true);
+    const asrOnly = playable({
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ vssId: "a.ja" }] } },
+    });
+    expect(lacksOurTrack(asrOnly, "abc123", DEFAULT_TRACK_CONFIG, false)).toBe(true);
+  });
+
+  it("is false once patched, for another video, a live stream, a disabled or replaced track", () => {
+    const patched = playable();
+    patchPlayerResponse(patched, DEFAULT_TRACK_CONFIG);
+    expect(lacksOurTrack(patched, "abc123", DEFAULT_TRACK_CONFIG, false)).toBe(false);
+    expect(lacksOurTrack(playable(), "other", DEFAULT_TRACK_CONFIG, false)).toBe(false);
+    const live = playable({ videoDetails: { videoId: "abc123", isLive: true } });
+    expect(lacksOurTrack(live, "abc123", DEFAULT_TRACK_CONFIG, false)).toBe(false);
+    expect(
+      lacksOurTrack(playable(), "abc123", { ...DEFAULT_TRACK_CONFIG, enabled: false }, false),
+    ).toBe(false);
+    expect(lacksOurTrack(null, "abc123", DEFAULT_TRACK_CONFIG, false)).toBe(false);
+    // A creator track in our language was selected instead of adding ours.
+    expect(lacksOurTrack(playable(), "abc123", DEFAULT_TRACK_CONFIG, true)).toBe(false);
   });
 });
 
@@ -226,6 +253,20 @@ describe("TrackHealth", () => {
       mode: "overlay",
       reason: "字幕選單裡沒有出現 AI 字幕軌",
     });
+  });
+
+  it("falls back at once when the track is known to be missing", () => {
+    const health = new TrackHealth(limits);
+    const missing = "AI 字幕軌沒加進播放器";
+    expect(health.observe(sample({ inTracklist: false, missing }), 0)).toEqual({
+      mode: "overlay",
+      reason: missing,
+    });
+    // Not during an ad (the player then shows the ad's state).
+    const other = new TrackHealth(limits);
+    expect(other.observe(sample({ inTracklist: false, adShowing: true, missing }), 0).mode).toBe(
+      "pending",
+    );
   });
 
   it("does not count ad time against the track", () => {

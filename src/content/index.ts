@@ -48,6 +48,7 @@ import {
   mergeCachedTranslations,
   sourceSettingsKey,
   type CaptionSource,
+  advanceDecidingMs,
 } from "./creator-source";
 import { saveDebugCapture } from "./debug-capture";
 import { energyEnvelope, findQuietCut, isNearFloor } from "./energy";
@@ -59,6 +60,7 @@ import {
   isIrrelevant,
   leadSeconds,
   nextNeeded,
+  sendWhatIsBuffered,
   trimCutSentence,
   type Job,
   type ScheduleOptions,
@@ -162,6 +164,8 @@ interface VideoState {
   sourceKey: string;
   /** Ad-free time spent deciding the source. */
   decidingMs: number;
+  /** When decidingMs was last advanced (extra ticks must not make it run fast). */
+  decidingAt: number;
 }
 
 function setCues(target: VideoState, cues: Cue[]) {
@@ -186,7 +190,9 @@ function refreshQuota() {
     (reply: QuotaReply | undefined) => {
       if (reply?.type !== "quota") return;
       quota = reply.levels;
+      const first = !quotaKnown;
       quotaKnown = true;
+      if (first) kick();
     },
     () => {
       // The service worker is restarting; ask again next time.
@@ -216,7 +222,9 @@ function resolveSource(target: VideoState) {
   target.sourceKey = key;
   const decided = decideSource(creatorReplies.get(target.videoId), target.decidingMs, settings);
   if (decided.kind === "deciding") {
-    if (!isAdShowing()) target.decidingMs += TICK_MS;
+    const now = Date.now();
+    target.decidingMs = advanceDecidingMs(target.decidingMs, target.decidingAt, now, isAdShowing());
+    target.decidingAt = now;
     askCreatorCaptions(target.videoId);
     return;
   }
@@ -322,6 +330,7 @@ function newVideoState(videoId: string): VideoState {
     source: { kind: "deciding" },
     sourceKey: "",
     decidingMs: 0,
+    decidingAt: 0,
   };
 }
 
@@ -365,6 +374,10 @@ window.addEventListener("message", (event) => {
   } else if (message.type === "creator-captions") {
     creatorReplies.set(message.videoId, message);
     while (creatorReplies.size > 8) creatorReplies.delete(creatorReplies.keys().next().value!);
+    // The source decision waits for this: go on now, not at the next tick. Not for
+    // "unknown" or "pending": tick asks again, and the answer would kick it again at once.
+    const decisive = message.status !== "unknown" && message.status !== "pending";
+    if (decisive && state?.videoId === message.videoId && state.source.kind === "deciding") kick();
   } else if (message.type === "audio-buffer") {
     diag.audioBuffers++;
     console.log(LOG_PREFIX, "audio SourceBuffer:", message.mime);
@@ -387,6 +400,7 @@ function onSegment(message: SegmentMessage) {
   if (!state || state.videoId !== videoId) {
     if (state) abortAll(state);
     state = newVideoState(videoId);
+    kick();
   }
   state.store.append(
     message.bufferId,
@@ -469,10 +483,12 @@ function syncCacheKey(target: VideoState) {
         );
       }
       target.cacheLoaded = true;
+      kick();
     },
     (error: unknown) => {
       console.warn(LOG_PREFIX, "could not read the cache", error);
       target.cacheLoaded = true;
+      kick();
     },
   );
 }
@@ -914,10 +930,7 @@ function schedule(target: VideoState, v: HTMLVideoElement) {
         .coverage(job.start, job.end)
         .runs.find((run) => run.start <= job.start + 0.3);
       const have = head ? Math.min(head.end, job.end) - job.start : 0;
-      // Short requests cost as much as 10 s ones: only when the playhead is close (in
-      // wall seconds, so a faster rate starts them earlier).
-      const margin = (job.start - t) / Math.max(1, rate);
-      if ((margin < 6 && have >= 8) || (margin < 2 && have >= 3)) {
+      if (sendWhatIsBuffered({ chunkStart: job.start, haveSeconds: have, playhead: t, rate })) {
         job.end = Math.round((job.start + have - 0.1) * 100) / 100;
       } else {
         diag.reason = `音訊還沒涵蓋 ${job.start.toFixed(1)}–${job.end.toFixed(1)} 秒`;
@@ -1013,6 +1026,9 @@ function tick() {
     diag.reason = "已關閉";
     return;
   }
+  // Ask for the quota now, while the source is being decided, not after: the first chunk
+  // would otherwise wait for it too. Harmless when no key or no Whisper turns out needed.
+  if (settings.groqApiKey) refreshQuota();
   resolveSource(target);
   if (target.source.kind === "deciding") {
     diag.reason = "確認有沒有創作者字幕";
@@ -1147,6 +1163,21 @@ setInterval(() => {
   tick();
   debugLog();
 }, TICK_MS);
+
+/**
+ * Runs a tick soon, outside the 1 s timer: when something the start waits for arrives (the
+ * page script's word on creator tracks, the cache, the first quota reply, a video's first
+ * audio), so each step does not wait for the next tick.
+ */
+let kickPending = false;
+function kick() {
+  if (kickPending) return;
+  kickPending = true;
+  setTimeout(() => {
+    kickPending = false;
+    tick();
+  }, 0);
+}
 setInterval(render, RENDER_MS);
 
 // The popup asks which display mode this tab uses.

@@ -255,6 +255,18 @@ export function creatorTick(
   }
 }
 
+/**
+ * The player will make no timedtext request for this video (our track is not in it), so
+ * no token comes: let the content script use Whisper now instead of after TOKEN_WAIT_MS.
+ */
+export function giveUpToken(videoId: string, reason: string) {
+  const entry = videos.get(videoId);
+  if (!entry || entry.status !== "pending" || entry.playerParams || fetching.has(videoId)) return;
+  entry.status = "failed";
+  entry.result = { status: "failed", reason };
+  console.warn(LOG_PREFIX, `no timedtext token for ${videoId}: ${reason}`);
+}
+
 /** The creator track in our language that replaced our track for this video, if any. */
 export function targetFor(videoId: string | null): CaptionTrackInfo | null {
   return (videoId && videos.get(videoId)?.target) || null;

@@ -6,6 +6,7 @@ import {
   isIrrelevant,
   leadSeconds,
   nextNeeded,
+  sendWhatIsBuffered,
   trimCutSentence,
   type Job,
 } from "./schedule";
@@ -163,5 +164,28 @@ describe("forPlaybackRate", () => {
     const far = { start: 100, end: 130 };
     expect(isIrrelevant(far, 5)).toBe(true);
     expect(isIrrelevant(far, 5, forPlaybackRate(DEFAULT_SCHEDULE, 2))).toBe(false);
+  });
+});
+
+const at = (chunkStart: number, haveSeconds: number, playhead: number, rate = 1) =>
+  sendWhatIsBuffered({ chunkStart, haveSeconds, playhead, rate });
+
+describe("sendWhatIsBuffered", () => {
+  it("waits at a start while the buffer is still well ahead of the playhead", () => {
+    // W1iGWTlt_hU: 4.3 s buffered with the playhead at 0.5 s.
+    expect(at(0, 4.3, 0.5)).toBe(false);
+    expect(at(0, 4.3, 1.5)).toBe(true); // the playhead is about to reach the end
+    expect(at(0, 2.5, 1.5)).toBe(false); // under 3 s: never
+  });
+
+  it("sends 8 s or more when the chunk starts soon", () => {
+    expect(at(30, 8, 25)).toBe(true);
+    expect(at(30, 8, 23)).toBe(false);
+    expect(at(30, 7.9, 29)).toBe(false); // 7.9 s with 8.9 s still ahead of the playhead
+  });
+
+  it("counts wall seconds at faster rates", () => {
+    expect(at(30, 8, 20, 2)).toBe(true);
+    expect(at(0, 4.3, 0.5, 2)).toBe(true); // 1.9 wall s ahead
   });
 });
