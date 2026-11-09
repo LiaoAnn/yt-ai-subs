@@ -66,6 +66,7 @@ import {
   type ScheduleOptions,
 } from "./schedule";
 import { MIN_VOICED_SHARE, bestVoicedWindow, voiceFeatures } from "./voice";
+import { translateWithRetry, type OkTranslateReply } from "./translation-attempts";
 import { awaitingTrackVerdict, schedulingPause } from "./watching";
 import { WAV_SAMPLE_RATE, bytesToBase64, encodeWav, renderAudio } from "./wav";
 
@@ -544,58 +545,108 @@ async function translateLines(
     if (signal.aborted || state !== target) return false;
   }
   if (!maySend()) return false;
-  const lines = fresh.map((cue) => cue.original);
-  const context = recentLines(target, Math.min(job.start, fresh[0]!.start)).filter(
-    (cue) => !fresh.includes(cue),
-  );
+  const outcome = await translateWithRetry(fresh, {
+    send: async (lines) => {
+      const reply = await requestTranslation(target, job, lines);
+      if (reply?.ok) quota = reply.quota;
+      else if (reply?.quotaPaused)
+        quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
+      return reply;
+    },
+    alive: () => !signal.aborted && state === target,
+    wait: (ms) => waitUntil(() => false, ms, signal).then(() => {}),
+    apply: (lines, reply) =>
+      applyTranslation(
+        target,
+        job,
+        lines,
+        reply,
+        lines === fresh ? label : `${label} (${lines.length} left out)`,
+      ),
+    mayAskAgain: () => !translationPaused(quota),
+    onRetry: (error) =>
+      console.warn(LOG_PREFIX, `translation ${label} failed, trying once more:`, error),
+  });
+  if (outcome.kind === "cancelled") return false;
+  if (outcome.kind === "failed") {
+    job.untranslated = true;
+    target.lastError = outcome.reply ? outcome.reply.error : "翻譯沒有回應";
+    console.warn(LOG_PREFIX, `translation ${label} failed:`, target.lastError);
+    return true;
+  }
+  // Lines still left out keep their original as the translation, as before: the chunk
+  // counts as translated (cached, and a creator chunk's later rounds do not pick them up).
+  if (outcome.missing.length) {
+    for (const cue of outcome.missing) cue.translation = cue.original;
+    target.cuesVersion++;
+    console.warn(
+      LOG_PREFIX,
+      `translation ${label}: ${outcome.missing.length} lines left untranslated`,
+    );
+  }
+  target.lastError = "";
+  return true;
+}
+
+/** Sends one translation request for `lines` (cues already in `target.cues`). */
+async function requestTranslation(
+  target: VideoState,
+  job: JobRecord,
+  lines: Cue[],
+): Promise<TranslateReply | undefined> {
+  const texts = lines.map((cue) => cue.original);
+  const context = recentLines(target, lines[0]!.start).filter((cue) => !lines.includes(cue));
   const info = videoInfos.get(target.videoId);
   const trRequest: TranslateMessage = {
     type: "translate",
     requestId: requestIds(target, job)[1]!,
     videoId: target.videoId,
-    lines,
+    lines: texts,
     context: context
       .map((cue) => (cue.translation ? `${cue.original} → ${cue.translation}` : cue.original))
       .join("\n"),
     ...(info ? { video: { title: info.title, channel: info.channel } } : {}),
-    glossary: relevantTerms(target.glossary, [...lines, ...context.map((cue) => cue.original)]),
+    glossary: relevantTerms(target.glossary, [...texts, ...context.map((cue) => cue.original)]),
   };
   job.sentGlossary = trRequest.glossary;
-  const tr = (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
-  if (signal.aborted || state !== target) return false;
-  if (tr?.ok) quota = tr.quota;
-  else if (tr?.quotaPaused) quota = { ...quota, chat: quota.chat === "ok" ? "low" : quota.chat };
-  if (tr?.ok) {
-    // A chunk translated alongside this one may have fixed a term's rendering first.
-    const fixed = applyGlossary(tr.lines, tr.terms, target.glossary);
-    if (fixed.replaced.length) {
-      console.log(LOG_PREFIX, `glossary applied to ${label}: ${fixed.replaced.join(", ")}`);
-    }
-    fresh.forEach((cue, i) => {
-      cue.translation = fixed.lines[i] ?? cue.original;
-    });
-    target.cuesVersion++;
-    target.lastError = "";
-    job.replyTerms = tr.terms;
-    const added = mergeTerms(target.glossary, tr.terms, lines);
-    if (added.length) {
-      console.log(
-        LOG_PREFIX,
-        `glossary +${added.length}: ${added.map(([a, b]) => `${a}→${b}`).join(", ")}`,
-      );
-    }
+  return (await chrome.runtime.sendMessage(trRequest)) as TranslateReply | undefined;
+}
+
+/** Puts a reply's translations on `lines` and grows the video's glossary. */
+function applyTranslation(
+  target: VideoState,
+  job: JobRecord,
+  lines: Cue[],
+  tr: OkTranslateReply,
+  label: string,
+) {
+  // A chunk translated alongside this one may have fixed a term's rendering first.
+  const fixed = applyGlossary(tr.lines, tr.terms, target.glossary);
+  if (fixed.replaced.length) {
+    console.log(LOG_PREFIX, `glossary applied to ${label}: ${fixed.replaced.join(", ")}`);
+  }
+  const missing = new Set(tr.missing);
+  lines.forEach((cue, i) => {
+    // A left-out line keeps no translation, so it can be asked for again.
+    if (!missing.has(i)) cue.translation = fixed.lines[i] ?? cue.original;
+  });
+  target.cuesVersion++;
+  job.replyTerms = tr.terms;
+  const texts = lines.map((cue) => cue.original);
+  const added = mergeTerms(target.glossary, tr.terms, texts);
+  if (added.length) {
     console.log(
       LOG_PREFIX,
-      `translation ${label}: ${fresh.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
-        `, glossary ${trRequest.glossary?.length ?? 0}` +
-        (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
+      `glossary +${added.length}: ${added.map(([a, b]) => `${a}→${b}`).join(", ")}`,
     );
-  } else {
-    job.untranslated = true;
-    target.lastError = tr ? tr.error : "翻譯沒有回應";
-    console.warn(LOG_PREFIX, `translation ${label} failed:`, target.lastError);
   }
-  return true;
+  console.log(
+    LOG_PREFIX,
+    `translation ${label}: ${lines.length} lines, ${tr.totalTokens} tokens, ${tr.latencyMs} ms` +
+      `, glossary ${job.sentGlossary?.length ?? 0}` +
+      (tr.missing.length ? `, ${tr.missing.length} left out` : "") +
+      (tr.waitedMs ? `, waited ${tr.waitedMs} ms for the rate limit` : ""),
+  );
 }
 
 /** Translates the creator-track lines of one chunk (no audio, no Whisper). */

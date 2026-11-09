@@ -3,7 +3,10 @@ import { DEFAULT_SETTINGS } from "@/shared/settings";
 import { emptyLedger, quotaFor, recordUsage } from "@/shared/quota";
 import {
   captionNotesRule,
+  GroqError,
   estimateChatTokens,
+  failedReply,
+  isRetryable,
   numberLines,
   parseTranslatedLines,
   transcribe,
@@ -42,8 +45,17 @@ describe("numberLines", () => {
 
 describe("estimateChatTokens", () => {
   it("grows with the prompt and the number of lines", () => {
-    expect(estimateChatTokens(1000, 10)).toBeGreaterThan(estimateChatTokens(500, 10));
-    expect(estimateChatTokens(1000, 20)).toBeGreaterThan(estimateChatTokens(1000, 10));
+    const ja = "あ".repeat(1000);
+    expect(estimateChatTokens(ja, 10)).toBeGreaterThan(estimateChatTokens(ja.slice(500), 10));
+    expect(estimateChatTokens(ja, 20)).toBeGreaterThan(estimateChatTokens(ja, 10));
+  });
+
+  it("counts English at about four characters a token and CJK at one", () => {
+    expect(estimateChatTokens("a".repeat(2400), 0)).toBe(600 + 400);
+    expect(estimateChatTokens("漢".repeat(600), 0)).toBe(600 + 400);
+    // A chunk of 12 dense lines: the English system prompt no longer dominates.
+    const prompt = "x".repeat(2300) + "日本語の台詞です".repeat(40);
+    expect(estimateChatTokens(prompt, 12)).toBeLessThan(2000);
   });
 });
 
@@ -122,6 +134,130 @@ describe("billing with a mocked Groq", () => {
       translate(new RateLimiter(), settings, ["x"], "", signal, () => {}, onBilled),
     ).rejects.toThrow("翻譯失敗 400");
     expect(billed).toHaveLength(1);
+  });
+
+  it("reports the lines a reply left out", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          choices: [{ message: { content: '{"1": "一", "3": "三"}' } }],
+          usage: { total_tokens: 100 },
+        }),
+      ),
+    );
+    const result = await translate(
+      new RateLimiter(),
+      settings,
+      ["a", "b", "c"],
+      "",
+      signal,
+      () => {},
+    );
+    expect(result.lines).toEqual(["一", "b", "三"]);
+    expect(result.missing).toEqual([1]);
+  });
+
+  it("frees a failed request's token estimate, so the next one need not wait for it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { message: "boom" } }, { status: 500 })),
+    );
+    const limiter = new RateLimiter();
+    const error = await translate(limiter, settings, ["x"], "", signal, () => {}).catch(
+      (e: unknown) => e,
+    );
+    expect(isRetryable(error)).toBe(true);
+    const entry = limiter.snapshot().entries.chat[0]!;
+    expect(entry.cost).toEqual({ requests: 1, tokens: 0 });
+  });
+});
+
+describe("failed translations through translate()", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const settings = { ...DEFAULT_SETTINGS, groqApiKey: "gsk_fake_not_a_real_key" };
+  const signal = new AbortController().signal;
+  const reply = () =>
+    translate(new RateLimiter(), settings, ["x"], "", signal, () => {}).then(
+      () => ({ ok: true }),
+      (e: unknown) => failedReply(e, false),
+    );
+
+  it("marks Groq's json_validate_failed 400 as retryable, not other 400s or a bad key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: { message: "Failed to generate JSON", code: "json_validate_failed" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    expect(await reply()).toMatchObject({ ok: false, retryable: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { message: "bad" } }, { status: 400 })),
+    );
+    expect(await reply()).not.toHaveProperty("retryable");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { code: "invalid_api_key" } }, { status: 401 })),
+    );
+    expect(await reply()).not.toHaveProperty("retryable");
+  });
+
+  it("marks an unreadable reply as retryable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ choices: [{ message: { content: '{"1": ' } }] })),
+    );
+    expect(await reply()).toMatchObject({
+      ok: false,
+      error: "翻譯格式看不懂",
+      retryable: true,
+    });
+  });
+
+  it("never marks a cancelled request as retryable", () => {
+    expect(failedReply(new GroqError("x", 503), true)).toEqual({
+      ok: false,
+      error: "cancelled",
+      aborted: true,
+    });
+  });
+
+  it("keeps the request but frees the tokens of a 429 retried by the limiter", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        ++calls === 1
+          ? Response.json({}, { status: 429, headers: { "retry-after": "0.01" } })
+          : Response.json({
+              choices: [{ message: { content: '{"1": "好"}' } }],
+              usage: { total_tokens: 300 },
+            }),
+      ),
+    );
+    const limiter = new RateLimiter();
+    await translate(limiter, settings, ["x"], "", signal, () => {});
+    expect(limiter.snapshot().entries.chat.map((entry) => entry.cost)).toEqual([
+      { requests: 1, tokens: 0 },
+      { requests: 1, tokens: 300 },
+    ]);
+  });
+});
+
+describe("isRetryable", () => {
+  it("retries Groq's failures and unreadable JSON, not a bad key or request", () => {
+    expect(isRetryable(new GroqError("翻譯格式看不懂"))).toBe(true);
+    expect(isRetryable(new GroqError("x", 503))).toBe(true);
+    expect(isRetryable(new GroqError("x", 429))).toBe(true);
+    expect(isRetryable(new GroqError("x", 400, "json_validate_failed"))).toBe(true);
+    expect(isRetryable(new TypeError("Failed to fetch"))).toBe(true);
+    expect(isRetryable(new GroqError("x", 401, "invalid_api_key"))).toBe(false);
+    expect(isRetryable(new GroqError("x", 400))).toBe(false);
+    expect(isRetryable(new Error("請先在擴充功能設定填 Groq API key"))).toBe(false);
   });
 });
 

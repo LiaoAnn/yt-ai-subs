@@ -207,8 +207,15 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Waits until `cost` fits, then records it. Re-checks after every wait, since other
- * requests (or new server headers) may have changed the budget meanwhile.
+ * Longest single sleep in `acquire`. A wait is often for an estimate that is corrected
+ * when its reply arrives (`adjust`): sleeping until the estimate left the window kept a
+ * translation waiting 28–64 s with 1,500-token replies, while it fitted after a few seconds.
+ */
+export const RECHECK_MS = 1000;
+
+/**
+ * Waits until `cost` fits, then records it. Re-checks at least every RECHECK_MS, since
+ * other requests (corrected costs, new server headers) may have changed the budget meanwhile.
  */
 export async function acquire(
   limiter: RateLimiter,
@@ -222,6 +229,6 @@ export async function acquire(
     signal?.throwIfAborted();
     const delay = limiter.delayFor(kind, cost, now());
     if (delay <= 0) return { id: limiter.record(kind, cost, now()), waitedMs: now() - started };
-    await sleep(delay, signal);
+    await sleep(Math.min(delay, RECHECK_MS), signal);
   }
 }

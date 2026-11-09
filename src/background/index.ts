@@ -22,7 +22,7 @@ import {
   type UsageLedger,
 } from "@/shared/quota";
 import { loadSettings } from "@/shared/settings";
-import { transcribe, translate } from "./groq";
+import { failedReply, transcribe, translate } from "./groq";
 import { RateLimiter, type Cost, type LimiterState, type RequestKind } from "./rate-limiter";
 
 console.log(LOG_PREFIX, "background service worker loaded");
@@ -84,15 +84,6 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
-}
-
-function failure(error: unknown, signal: AbortSignal): FailedReply {
-  if (signal.aborted) return { ok: false, error: "cancelled", aborted: true };
-  return {
-    ok: false,
-    error: error instanceof Error ? error.message : String(error),
-    aborted: false,
-  };
 }
 
 async function handle(
@@ -160,13 +151,14 @@ async function handle(
     return {
       ok: true,
       lines: result.lines,
+      missing: result.missing,
       totalTokens: result.totalTokens,
       terms: result.terms,
       ...result.stats,
       quota: await currentLevels(),
     };
   } catch (error) {
-    return failure(error, signal);
+    return failedReply(error, signal.aborted);
   } finally {
     inFlight.delete(key);
   }
