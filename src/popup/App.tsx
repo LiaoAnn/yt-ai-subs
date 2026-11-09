@@ -3,13 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { DisplayModeStatus } from "./DisplayModeStatus";
 import { QuotaStatus } from "./QuotaStatus";
@@ -113,40 +107,34 @@ export function App() {
 
               <div className="grid gap-2">
                 <Label htmlFor="whisper-model">語音辨識模型</Label>
-                <Select
+                <NativeSelect
+                  id="whisper-model"
                   value={settings.whisperModel}
-                  onValueChange={(value) => update({ whisperModel: value as WhisperModel })}
+                  onChange={(event) => update({ whisperModel: event.target.value as WhisperModel })}
                 >
-                  <SelectTrigger id="whisper-model" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {WHISPER_MODELS.map((model) => (
-                      <SelectItem key={model.value} value={model.value}>
-                        {model.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {WHISPER_MODELS.map((model) => (
+                    <NativeSelectOption key={model.value} value={model.value}>
+                      {model.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
               </div>
 
               <div className="grid gap-2">
                 <Label htmlFor="source-language">影片語言</Label>
-                <Select
+                <NativeSelect
+                  id="source-language"
                   value={settings.sourceLanguage}
-                  onValueChange={(value) => update({ sourceLanguage: value as SourceLanguage })}
+                  onChange={(event) =>
+                    update({ sourceLanguage: event.target.value as SourceLanguage })
+                  }
                 >
-                  <SelectTrigger id="source-language" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SOURCE_LANGUAGES.map((language) => (
-                      <SelectItem key={language.value} value={language.value}>
-                        {language.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {SOURCE_LANGUAGES.map((language) => (
+                    <NativeSelectOption key={language.value} value={language.value}>
+                      {language.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
               </div>
 
               <div className="flex items-center justify-between gap-2">
@@ -160,42 +148,38 @@ export function App() {
 
               <div className="grid gap-2">
                 <Label htmlFor="target-language">翻譯成</Label>
-                <Select
+                <NativeSelect
+                  id="target-language"
                   value={settings.targetLanguage}
                   disabled={!settings.translate}
-                  onValueChange={(value) => update({ targetLanguage: value as TargetLanguage })}
+                  onChange={(event) =>
+                    update({ targetLanguage: event.target.value as TargetLanguage })
+                  }
                 >
-                  <SelectTrigger id="target-language" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TARGET_LANGUAGES.map((language) => (
-                      <SelectItem key={language.value} value={language.value}>
-                        {language.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {TARGET_LANGUAGES.map((language) => (
+                    <NativeSelectOption key={language.value} value={language.value}>
+                      {language.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
               </div>
 
               <div className="grid gap-2">
                 <Label htmlFor="translation-model">翻譯模型</Label>
-                <Select
+                <NativeSelect
+                  id="translation-model"
                   value={settings.translationModel}
                   disabled={!settings.translate}
-                  onValueChange={(value) => update({ translationModel: value as TranslationModel })}
+                  onChange={(event) =>
+                    update({ translationModel: event.target.value as TranslationModel })
+                  }
                 >
-                  <SelectTrigger id="translation-model" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TRANSLATION_MODELS.map((model) => (
-                      <SelectItem key={model.value} value={model.value}>
-                        {model.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {TRANSLATION_MODELS.map((model) => (
+                    <NativeSelectOption key={model.value} value={model.value}>
+                      {model.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
               </div>
 
               <div className="flex items-center justify-between gap-2">

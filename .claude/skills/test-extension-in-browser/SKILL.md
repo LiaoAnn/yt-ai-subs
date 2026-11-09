@@ -71,13 +71,19 @@ agent-browser --session $S snapshot -i
 
 To test saving, use a fake key (e.g. `gsk_fake_not_a_real_key`), never a real one:
 
-- After choosing an option in a shadcn/Radix `Select`, `wait 800` before the next click: while the dropdown closes, an overlay swallows clicks ("Element is covered by …").
+- The choices are native `<select>` elements: set one with `agent-browser --session $S select "#source-language" "ko"` (or focus it and press arrow keys).
 - Save, `wait --text "已儲存"`, `reload`, and snapshot again: the fields should keep their values.
 - Read what was stored without printing the key:
 
 ```bash
 agent-browser --session $S eval "chrome.storage.local.get('settings').then(s => ({...s.settings, groqApiKey: s.settings.groqApiKey ? '(set, ' + s.settings.groqApiKey.length + ' chars)' : ''}))"
 ```
+
+A tab is not the real popup: the action popup sizes its window to the page (up to 800×600) and resizes it when the content's size changes (a scrollbar appearing or going), and a tab does neither. Anything that depends on the popup window (focus, resizes, scroll locks; Radix Select closed itself within 0.2 s there, 4 of 4, and stayed open in a tab, 4 of 4) must be checked in the real popup:
+
+- Start the browser `--headed` (the action popup needs a window with a toolbar), open `chrome-extension://<id>/popup.html` as a tab, and run `agent-browser --session $S eval "chrome.action.openPopup()"` there: the popup opens on that window.
+- The popup is a CDP target of type `page` with the popup URL for which `Browser.getWindowForTarget` fails ("Browser window not found"; the tab has a window). Attach to it with `Target.attachToTarget` (`flatten: true`) from a small `node` CDP client (like `test/fake-groq/`) on `agent-browser --session $S get cdp-url`, then use `Runtime.evaluate` and `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` in that session.
+- A native `<select>`'s option list is drawn by Chrome outside the page, so CDP input cannot click an option in it: click on the desktop with cua-driver (the popup and its list are on display `:0`), or use the keyboard.
 
 ## 4. Logs and state
 

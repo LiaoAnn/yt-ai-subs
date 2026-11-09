@@ -46,6 +46,7 @@ Chrome extension (Manifest V3) that transcribes YouTube audio with a speech-to-t
 ## Stack
 
 - React + Vite + shadcn/ui + Tailwind CSS for the popup/options UI.
+- No Radix Select in the action popup: it locks the page's scroll while open, which removes the popup's scrollbar and resizes the popup window (335 → 350 px wide), and it closes itself on any window `resize` or `blur`, so it shut again within 0.2 s (in a real action popup: 4 of 4 selects with the mouse at the top and bottom, 4 of 4 with the keyboard in the middle; with its `resize` listener suppressed, 4 of 4 stayed open). Other Radix parts that lock scroll (a modal DropdownMenu, Dialog) are untested there; check them in the real popup before using them. Choices use a native `<select>` styled like shadcn (`src/components/ui/native-select.tsx`). A popup opened as a tab (`chrome-extension://<id>/popup.html`) does not resize and hides the bug; test the popup with `chrome.action.openPopup()` (the `test-extension-in-browser` skill, section 3).
 - TypeScript 7 (`tsc` v7, the native compiler) for type checking.
 - oxlint for linting, oxfmt for formatting. No ESLint or Prettier.
 - pnpm (via corepack) as the package manager.
