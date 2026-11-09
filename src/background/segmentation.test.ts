@@ -9,6 +9,7 @@ import {
   wordsBySegment,
   padLines,
   rejectReason,
+  segmentDecisions,
   repetitiveFallbacks,
   whisperToCues,
 } from "./segmentation";
@@ -215,6 +216,10 @@ describe("whisperToCues", () => {
     expect(isHallucination("[音楽]")).toBe(true);
     expect(isHallucination("(笑) そうですね")).toBe(false);
     expect(isHallucination("「はい」")).toBe(false);
+    expect(isHallucination("자막 제공 배달의민족")).toBe(true);
+    expect(isHallucination("제공 배달의민족")).toBe(true);
+    expect(isHallucination("한글자막 by 한효정")).toBe(true);
+    expect(isHallucination("배달의민족으로 시켰어요")).toBe(false);
   });
 });
 
@@ -231,17 +236,38 @@ describe("rejectReason (made-up text over music and silence)", () => {
     expect(rejectReason(speech, { ...ok, repetitive: true })).toBe("repetitive fallback decode");
   });
 
-  it("drops an unsure fallback decode, but not the same confidence at temperature 0", () => {
+  it("drops an unsure fallback decode of a window that repeats itself", () => {
     const listed = { start: 0, end: 3, text: "エビの皮", avg_logprob: -0.81 };
-    expect(rejectReason({ ...listed, temperature: 0.4 }, ok)).toBe("unsure fallback decode");
-    expect(rejectReason({ ...listed, temperature: 0 }, ok)).toBe("");
-    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.8 }, ok)).toBe("");
-    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.7 }, ok)).toBe("");
+    const repeating = { ...ok, repeatingWindow: true };
+    expect(rejectReason({ ...listed, temperature: 0.4 }, repeating)).toBe("unsure fallback decode");
+    expect(rejectReason({ ...listed, temperature: 0 }, repeating)).toBe("");
+    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.8 }, repeating)).toBe("");
+    expect(rejectReason({ ...listed, temperature: 0.4, avg_logprob: -0.7 }, repeating)).toBe("");
   });
 
-  it("drops a third identical segment in a row and long repeats of the prompt", () => {
-    expect(rejectReason(speech, { ...ok, repeats: 1 })).toBe("");
-    expect(rejectReason(speech, { ...ok, repeats: 2 })).toBe("repeated segment");
+  it("keeps an unsure fallback decode of varied talk (nOSYk1M9KBo 139 s)", () => {
+    const talk = {
+      start: 0,
+      end: 1,
+      text: "진짜 가는 거예요",
+      temperature: 0.4,
+      avg_logprob: -0.91,
+    };
+    expect(rejectReason(talk, ok)).toBe("");
+  });
+
+  it("drops what Whisper counts as probably no speech unless it is sure of the text", () => {
+    const outro = { start: 0, end: 2, text: "다음 영상에서 만나요.", temperature: 0 };
+    expect(rejectReason({ ...outro, no_speech_prob: 0.47, avg_logprob: -0.34 }, ok)).toBe(
+      "no speech",
+    );
+    expect(rejectReason({ ...outro, no_speech_prob: 0.47, avg_logprob: -0.15 }, ok)).toBe("");
+    expect(rejectReason({ ...outro, no_speech_prob: 0.35, avg_logprob: -0.5 }, ok)).toBe("");
+  });
+
+  it("drops a fourth identical segment in a row and long repeats of the prompt", () => {
+    expect(rejectReason(speech, { ...ok, repeats: 2 })).toBe("");
+    expect(rejectReason(speech, { ...ok, repeats: 3 })).toBe("repeated segment");
     expect(rejectReason(speech, { ...ok, prompt: "前の行。今日は、いい天気ですね。" })).toBe(
       "repeats the prompt",
     );
@@ -307,6 +333,8 @@ describe("repetitiveFallbacks", () => {
     const mixed = window(
       [
         "アンケートのご協力お願いします",
+        "今日はありがとうございました",
+        "天気がいいですね",
         "私は朝食を食べるために、",
         "私は朝食を早く食べます。",
         "私は朝食を食べる必要があります。",
@@ -317,6 +345,47 @@ describe("repetitiveFallbacks", () => {
     const flagged = repetitiveFallbacks(mixed);
     expect(flagged.has(mixed[0]!)).toBe(false);
     expect(flagged.size).toBe(4);
+  });
+
+  it("drops a whole fallback window that is mostly a loop, items said once included", () => {
+    // LHZgl2pbY7Q 110 s over BGM: temperature 0.2, avg_logprob -0.25, one item per segment
+    const list = window(
+      ["クリームチーズ", "マヨネーズ", "塩", "コショウ", "オリーブオイル", "塩", "コショウ"].concat(
+        ["オイル", "オイル", "コショウ", "オイル", "オイル", "オイル", "オイル", "オイル"],
+      ),
+      0.2,
+    );
+    expect(repetitiveFallbacks(list).size).toBe(15);
+    // Fewer than 3 in 4 segments looping: the ones said once stay (5Ma5inm_Dac 304 s).
+    const meal = window(
+      [
+        "おやつを食べるときに、お腹が空いてる",
+        "おいしいね",
+        "おいしい",
+        "あ、おいしい",
+        "おいしい?",
+        "けんかのね",
+        "初めてできるやつだからね",
+        "おいしい",
+        "おいしいよね",
+        "すごくおいしい",
+        "温まる感じですね",
+      ],
+      0.2,
+    );
+    const flagged = repetitiveFallbacks(meal);
+    expect(flagged.size).toBe(7);
+    expect(flagged.has(meal[0]!)).toBe(false);
+  });
+
+  it("drops the whole window from 3 in 4 looping segments on", () => {
+    const loops = ["塩コショウ", "オイル", "塩コショウ", "オイル", "塩コショウ", "オイル"];
+    const at75 = window(["今日はいい天気", ...loops, "明日も晴れ"], 0.2);
+    expect(repetitiveFallbacks(at75).size).toBe(8);
+    const under = window(["今日はいい天気", ...loops, "明日も晴れ", "週末は山へ"], 0.2);
+    const flagged = repetitiveFallbacks(under);
+    expect(flagged.size).toBe(6);
+    expect(flagged.has(under[0]!)).toBe(false);
   });
 
   it("keeps a long fallback window of real talk whose sentences share a sequence or two", () => {
@@ -339,6 +408,37 @@ describe("repetitiveFallbacks", () => {
   });
 });
 
+describe("segmentDecisions on unsure fallback windows", () => {
+  const unsure = (texts: string[]) =>
+    texts.map((text, i) => ({
+      start: i,
+      end: i + 1,
+      text,
+      temperature: 0.4,
+      compression_ratio: 1.5,
+      avg_logprob: -0.9,
+    }));
+
+  it("drops all of an unsure window that repeats itself, lines said once included", () => {
+    const decisions = segmentDecisions({
+      segments: unsure([
+        "塩コショウオイルを入れます",
+        "はい",
+        "塩コショウオイルを入れます",
+        "うん",
+      ]),
+    });
+    expect(decisions.map((d) => d.reason)).toEqual(Array(4).fill("unsure fallback decode"));
+  });
+
+  it("keeps an unsure window of varied talk (nOSYk1M9KBo 139 s)", () => {
+    const decisions = segmentDecisions({
+      segments: unsure(["오!", "진짜 가는 거예요", "오! 재밌는데?", "그렇지!", "어우 되게 무겁다"]),
+    });
+    expect(decisions.map((d) => d.reason)).toEqual(Array(5).fill(""));
+  });
+});
+
 describe("whisperToCues across segments", () => {
   it("joins a tiny segment to its neighbour instead of showing it alone", () => {
     const words = [
@@ -358,16 +458,17 @@ describe("whisperToCues across segments", () => {
     expect(cues.map((cue) => cue.original)).toEqual(["それも本当に難しい"]);
   });
 
-  it("keeps a line said twice (two speakers) but drops a third repeat in a row", () => {
-    const cues = whisperToCues({
-      segments: [say(0), say(0.6), say(1.2)],
-      words: [0, 0.6, 1.2].map((start) => ({ word: "15,000원?", start, end: start + 0.5 })),
+  it("keeps a line said three times (people greeting) but drops a fourth repeat in a row", () => {
+    const starts = [0, 0.6, 1.2, 1.8];
+    const decisions = segmentDecisions({
+      segments: starts.map(say),
+      words: starts.map((start) => ({ word: "15,000원?", start, end: start + 0.5 })),
     });
-    expect(cues.map((cue) => cue.original)).toEqual(["15,000원? 15,000원?"]);
+    expect(decisions.map((d) => d.reason)).toEqual(["", "", "", "repeated segment"]);
   });
 
-  it("drops the third and later copies of a looping segment", () => {
-    const loop = [0, 5, 10, 15].map((start) => ({
+  it("drops the fourth and later copies of a looping segment", () => {
+    const loop = [0, 5, 10, 15, 20].map((start) => ({
       start,
       end: start + 2,
       text: "このビジュアルを使用しています",
@@ -376,7 +477,7 @@ describe("whisperToCues across segments", () => {
       segments: loop,
       words: loop.map((s) => ({ word: s.text, start: s.start + 0.2, end: s.end - 0.2 })),
     });
-    expect(cues.length).toBe(2);
+    expect(cues.length).toBe(3);
   });
 });
 
